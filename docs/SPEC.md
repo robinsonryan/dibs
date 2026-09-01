@@ -1,6 +1,6 @@
 # Dibs — headless booking engine (package spec, v1)
 
-**Package:** `robinsonryan/dibs` · **Namespace:** `RobinsonRyan\Dibs` · **Status:** v1 released as 0.1.0 / 0.1.1 / 0.1.2 (2026-09-01); work continues on `develop`
+**Package:** `robinsonryan/dibs` · **Namespace:** `RobinsonRyan\Dibs` · **Status:** v1 released as 0.1.0 / 0.1.1 / 0.1.2 / 0.2.0 (2026-09-01); work continues on `develop`
 **First consumer:** ccstake (bishopric interviews, tithing settlement, calling-extension meetings). The
 ccstake integration gets its **own spec in the ccstake repo**; §10 here is informative only.
 
@@ -52,6 +52,7 @@ for the `bookedFor`/`bookedBy` relationship pair.
 | D12 | Offers hold capacity-1 slots only in v1 (holding one unit of a capacity-N slot is deferred). |
 | D13 | Booking `type` is a consumer-defined string, denormalized onto the booking at creation (default: the availability's `type`) so bookings survive availability edits. |
 | D14 | **Host assignment is mutable after booking, one host per role.** Auto-assign (D9) is a convenience, not a commitment: a booking's host for a given role can be set, replaced or cleared afterwards by `AssignBookingHost` / `UnassignBookingHost`, so a pool member can take an unassigned booking and an administrator can reassign one. Assigning is a **replace**, never an add — a role holds at most one host on a booking (the many-to-many of D7 is across roles, not within one). Consumers never write `dibs_booking_hosts` rows themselves. A cancelled booking is frozen; a completed or no-show one may still have its record corrected (added 2026-09-01). |
+| D15 | **Host availability is a query, never a solver** (D8 stands). The package answers three questions about a host's time and no others: is this host busy in a window, which of an availability's pool is free during a slot, and which slots have nobody free. All three read the same overlap predicate as the R18 booking-time guard — half-open `[starts_at, ends_at)`, so a booking that ends exactly when another starts does not conflict — and all three ignore bookings **on the slot being asked about**, because one host seating two attendees in a shared capacity-N slot is not double-booked with themselves (the R19 rule). The free-host filter on `Slot::bookable()` is **opt-in and role-agnostic**: a slot is excluded only when its availability has a host pool and no member of that pool is free; an availability with no pool is never excluded, because there is nobody to be busy (added 2026-09-01). |
 
 ## 4. Data model
 
@@ -202,8 +203,27 @@ each firing its event **after commit** (`DB::afterCommit`). Invalid state transi
 ### 5.4 Query scopes (public API)
 `Availability::published()`, `Slot::bookable()` (open + published availability + future + notice/horizon
 satisfied), `Slot::upcoming()` (live, never retired), `Slot::retired()`, `Booking::active()` (status
-`booked`), `Booking::upcoming()`, `Offer::pending()` (status pending AND unexpired), and
-`forContext($model)` on `Availability`, `Booking` and `Offer`.
+`booked`), `Booking::upcoming()`, `Offer::pending()` (status pending AND unexpired),
+`Offer::pendingFor($party)` (pending and unexpired, offered to that party), `Offer::createdBy($party)`,
+and `forContext($model)` on `Availability`, `Booking` and `Offer`.
+
+`Slot::bookable($now, requireFreeHost: true)` adds the D15 filter: a slot whose availability has a host
+pool and none of whose pool members is free during it drops out. It is one SQL statement — nested
+`EXISTS` over the pool and the busy assignments, no per-slot query — and it is off by default, so
+`bookable()` on its own means exactly what it meant before.
+
+### 5.5 Host availability (D15)
+
+`Support\HostAvailability` is the read side of the R18 guard:
+
+- `busyBookings($host, $start, $end, $except = null)` — active bookings (status `booked`) with this host
+  assigned in **any** role whose slot overlaps `[$start, $end)`, ordered by slot start. `$except` drops
+  one booking from the answer, which is how a caller asks "would this host be free if we ignored the
+  booking they are about to change?".
+- `isFree($host, $start, $end, $except = null)` — the same question as a boolean.
+- `freeHosts($availability, $slot, $role = 'host')` — the availability's pool members for that role who
+  are free during the slot, returned as the **host models** (resolved through the `host` morph) in pool
+  order. It never picks one: choosing is the consumer's (D8).
 
 ## 6. Events
 
@@ -275,13 +295,17 @@ per the `verification` skill before any "done" claim.
 | R35 | Config `models` map substitutes extended models throughout the package's own queries | `Support\Dibs::model/make/query`; relationships + factory `modelName()` resolve through it | `tests/Feature/Foundation/ModelResolverTest.php` | Done |
 | R36 | Package stores/compares UTC instants only; no timezone conversion anywhere in package code (D10) | `CarbonImmutable::now('UTC')` / `Slot::instant()` everywhere; `->utc()` normalisation before persistence only | grep audit 2026-09-01: no `timezone`/`setTimezone`/`tz(`/`parse` in `src/`; `SlotGridTest` same-instant-across-offsets case | Done |
 | R37 | Test suite runs on real PostgreSQL via Testbench (taxon TestCase pattern); no SQLite anywhere | `tests/TestCase.php` (pgsql, per-worktree `testing_wt_<slug>`), `tests/Pest.php` | whole suite; `SchemaTest` asserts timestamptz/jsonb | Done |
-| R38 | `ddev composer quality` passes: Pint, PHPStan L8 zero-ignore, Rector check, full Pest suite | `composer quality` (`.githooks/pre-commit` runs it on every commit) | final run on `feature/v1` 2026-09-01 (0ecd949): 256 passed / 724 assertions, PHPStan 0 errors, Rector clean; `harness package-check`: gate green, floor green @ Laravel 12.61.1 | Done |
+| R38 | `ddev composer quality` passes: Pint, PHPStan L8 zero-ignore, Rector check, full Pest suite | `composer quality` (`.githooks/pre-commit` runs it on every commit) | 0.1.2 run on `feature/v1` (0ecd949): 256 passed / 724 assertions; 0.2.0 run on `develop` 2026-09-01: Pint 122 files, PHPStan 0 errors, Rector clean, **298 passed / 812 assertions**; `harness package-check` @ 0.1.2: gate green, floor green @ Laravel 12.61.1 | Done |
 | R39 | Factories exist for all models; states for each status | `database/factories/*Factory.php` | `tests/Feature/Foundation/FactoriesTest.php` | Done |
 | R40 | Bookings and offers carry `context`; `BookSlot` copies the availability's, direct bookings/offers take it as an argument; `forContext()` scopes on Availability/Booking/Offer | `BookSlot` stamps `context` (option ?? availability); `CreateOffer(..., ?Model $context)`; `AcceptOffer` propagates; `scopeForContext` on Availability/Booking/Offer | `tests/Feature/Foundation/ContextTest.php`; context cases in `BookSlotTest`, `CreateDirectBookingTest`, `CreateOfferTest`, `AcceptOfferTest` | Done |
 | R41 | Regeneration retires (never deletes) an open slot that has booking rows; retired slots leave `bookable()` and `upcoming()`; their position is reused | `UpdateAvailabilityGeometry` retires open slots with spent history (`whereDoesntHave('activeBookings')`); `SlotStatus::Retired`; `Slot::retired()`; `upcoming()` excludes; `ReleaseSlot` treats retired as terminal | `UpdateAvailabilityGeometryTest` retirement cases (incl. partly-full slot survives), `ScopesTest`, `ReleaseSlotTest`, `DeleteAvailabilityTest` | Done |
 | R42 | `DeleteAvailability` / `UpdateAvailabilityGeometry` query slots through `Dibs::query()` so lock, check and delete run on the transaction's connection | `DeleteAvailability`, `UpdateAvailabilityGeometry` via `Dibs::lock()` + `Dibs::query(Slot::class)` | `tests/Concurrency/AvailabilityConcurrencyTest.php` pinned-model cases (delete case red before the fix) | Done |
 | R43 | `AssignBookingHost(booking, host, role, guardHostOverlap)` replaces the role's assignment from the booking's locked row: one row per role afterwards, same host + role is a no-op with no event, cancelled booking throws, the optional overlap guard throws `HostOverlap` before any write, roles are independent; fires `BookingHostAssigned` with the displaced host after commit (D14) | `Actions\AssignBookingHost`, `Events\BookingHostAssigned`, reuses `Support\OverlapCheck::forSlot` | `tests/Feature/Booking/AssignBookingHostTest.php`; `tests/Concurrency/BookingHostConcurrencyTest.php` (lock mutated out → red) | Done |
 | R44 | `UnassignBookingHost(booking, role)` deletes the role's assignment from the booking's locked row; no rows is a no-op with no event; cancelled booking throws, completed/no-show allowed; fires `BookingHostUnassigned` per removed host after commit (D14) | `Actions\UnassignBookingHost`, `Events\BookingHostUnassigned` | `tests/Feature/Booking/UnassignBookingHostTest.php` | Done |
+| R45 | `HostAvailability::busyBookings($host, $start, $end, $except = null)` returns the host's active bookings in any role whose slot overlaps `[$start, $end)` ordered by slot start, `$except` excluded; `isFree()` is its boolean (D15) | `Support\HostAvailability`, reusing `OverlapCheck::overlappingSlots()` as the one overlap predicate | `tests/Feature/Booking/HostAvailabilityTest.php` | Done |
+| R46 | `HostAvailability::freeHosts($availability, $slot, $role)` returns the pool members free during the slot as host models in pool order, in a fixed number of queries; a host busy only on that same slot still counts as free (D15) | `Support\HostAvailability::freeHosts` (one busy-assignment query + one morph load) | `HostAvailabilityTest` pool-of-three cases | Done |
+| R47 | `Slot::bookable($now, requireFreeHost: true)` also excludes a slot whose availability has a pool with nobody free; an availability with no pool is never excluded; the default `false` leaves `bookable()` byte-identical (D15) | `Slot::scopeBookable` — nested `whereExists`/`whereNotExists` over `fromSub` derived tables, no raw SQL, no N+1 | `tests/Feature/Foundation/BookableFreeHostTest.php`, `ScopesTest` | Done |
+| R48 | `Offer::pendingFor($party)` (pending, unexpired, offered to that party) and `Offer::createdBy($party)` scopes | `Offer::scopePendingFor`, `Offer::scopeCreatedBy` | `tests/Feature/Offer/OfferScopesTest.php` | Done |
 
 ## 9a. Non-goals (explicit exclusions)
 
@@ -289,7 +313,7 @@ per the `verification` skill before any "done" claim.
 |----|----------|--------|
 | N1 | Recurrence rules (RRULE, series editing, exceptions) — duplicate-availability instead (D5) | Excluded |
 | N2 | Joint-availability computation / constraint solving across resources (D8) | Excluded |
-| N3 | Cross-availability conflict *enforcement* (beyond the opt-in overlap guard R18) | Excluded |
+| N3 | Cross-availability conflict *enforcement* (beyond the opt-in overlap guard R18; D15's queries and the `requireFreeHost` filter report conflicts, they do not enforce anything) | Excluded |
 | N4 | Notifications, reminders, mail, SMS — consumers listen to events | Excluded |
 | N5 | UI, routes, controllers, HTTP anything | Excluded |
 | N6 | Authorization / visibility policy (who may publish, see, book) | Excluded |

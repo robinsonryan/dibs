@@ -144,10 +144,16 @@ class Slot extends Model
      * availability's notice/horizon window — measured against `$now` (a UTC
      * instant; defaults to the clock). Held slots never appear here (R32).
      *
+     * With `$requireFreeHost`, a slot also drops out when its availability has
+     * a host pool and no member of that pool is free across it (D15) — what a
+     * member is offered, as opposed to what a leader may book into. An
+     * availability with no pool is never excluded: there is nobody to be busy.
+     * Off by default, so `bookable()` alone means what it always meant.
+     *
      * @param  Builder<static>  $query
      * @return Builder<static>
      */
-    public function scopeBookable(Builder $query, ?CarbonInterface $now = null): Builder
+    public function scopeBookable(Builder $query, ?CarbonInterface $now = null, bool $requireFreeHost = false): Builder
     {
         $now = self::instant($now);
 
@@ -158,7 +164,7 @@ class Slot extends Model
         $availability = Dibs::query(Availability::class)
             ->select(['id', 'status', 'min_notice_minutes', 'max_horizon_days']);
 
-        return $query
+        $query = $query
             ->where($this->qualifyColumn('status'), SlotStatus::Open->value)
             ->where($this->qualifyColumn('starts_at'), '>', $now)
             ->whereExists(function (QueryBuilder $exists) use ($now, $availability): void {
@@ -177,6 +183,79 @@ class Slot extends Model
                             ->orWhereRaw('starts_at <= ?::timestamptz + make_interval(days => a.max_horizon_days)', [$now]);
                     });
             });
+
+        if (! $requireFreeHost) {
+            return $query;
+        }
+
+        // Keep the slot when its availability has no pool at all (nobody to be
+        // busy), or when at least one pool member has nothing else booked
+        // across it. Both pool reads are derived tables, so the `dibs_slots`
+        // inside the busy one cannot shadow the outer slot row the comparisons
+        // correlate against.
+        return $query->where(function (Builder $free): void {
+            $free
+                ->whereNotExists(fn (QueryBuilder $pool): QueryBuilder => $pool
+                    ->fromSub($this->poolOf(), 'pool')
+                    ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id')))
+                ->orWhereExists(function (QueryBuilder $member): void {
+                    $member
+                        ->fromSub($this->poolOf(), 'pool')
+                        ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id'))
+                        ->whereNotExists(fn (QueryBuilder $busy): QueryBuilder => $busy
+                            ->fromSub($this->busyHosts(), 'busy')
+                            ->whereColumn('busy.host_type', 'pool.host_type')
+                            ->whereColumn('busy.host_id', 'pool.host_id')
+                            // A booking on this very slot never makes its own
+                            // host busy for it (D15/B38).
+                            ->whereColumn('busy.slot_id', '!=', $this->qualifyColumn('id'))
+                            // The half-open overlap of OverlapCheck::overlappingSlots,
+                            // restated between two slot rows (B37).
+                            ->whereColumn('busy.starts_at', '<', $this->qualifyColumn('ends_at'))
+                            ->whereColumn('busy.ends_at', '>', $this->qualifyColumn('starts_at')));
+                });
+        });
+    }
+
+    /**
+     * The host pool, keyed by availability — a derived table so the outer
+     * query's own columns stay reachable from the correlations above.
+     *
+     * @return Builder<AvailabilityHost>
+     */
+    private function poolOf(): Builder
+    {
+        $host = Dibs::make(AvailabilityHost::class);
+
+        return Dibs::query(AvailabilityHost::class)->select([
+            $host->qualifyColumn('availability_id'),
+            $host->qualifyColumn('host_type'),
+            $host->qualifyColumn('host_id'),
+        ]);
+    }
+
+    /**
+     * Every live host assignment flattened onto the time it occupies.
+     *
+     * @return Builder<BookingHost>
+     */
+    private function busyHosts(): Builder
+    {
+        $assignment = Dibs::make(BookingHost::class);
+        $booking = Dibs::make(Booking::class);
+        $slot = Dibs::make(Slot::class);
+
+        return Dibs::query(BookingHost::class)
+            ->join($booking->getTable(), $booking->qualifyColumn('id'), '=', $assignment->qualifyColumn('booking_id'))
+            ->join($slot->getTable(), $slot->qualifyColumn('id'), '=', $booking->qualifyColumn('slot_id'))
+            ->where($booking->qualifyColumn('status'), BookingStatus::Booked->value)
+            ->select([
+                $assignment->qualifyColumn('host_type'),
+                $assignment->qualifyColumn('host_id'),
+                $booking->qualifyColumn('slot_id'),
+                $slot->qualifyColumn('starts_at'),
+                $slot->qualifyColumn('ends_at'),
+            ]);
     }
 
     /**

@@ -157,6 +157,46 @@ use RobinsonRyan\Dibs\Actions\{AssignBookingHost, UnassignBookingHost};
 Both refuse a cancelled booking (`InvalidTransition`); a completed or no-show booking
 may still have its record corrected. Both return the booking with `hosts.host` loaded.
 
+### Host availability
+
+A booking reserves the **host's time**, not a labelled slot. These three read that time;
+none of them chooses anybody — picking a host is yours (the package never solves for a
+combination of resources).
+
+```php
+use RobinsonRyan\Dibs\Support\HostAvailability;
+
+HostAvailability::busyBookings($bishop, $from, $until);
+// active bookings with the bishop assigned in any role whose slot overlaps
+// [$from, $until), earliest slot first — across every availability and every
+// kind of booking
+
+HostAvailability::isFree($bishop, $from, $until);          // the same, as a bool
+HostAvailability::isFree($bishop, $from, $until, $booking); // ...ignoring one booking,
+// which is how you ask "would he be free if we moved this one?"
+
+HostAvailability::freeHosts($availability, $slot, 'interviewer');
+// the pool members for that role with nothing else booked across the slot,
+// returned as your own host models, in pool order
+```
+
+Intervals are half-open: a booking that ends exactly when the next one starts does not
+conflict. A booking on the slot being asked about never counts against its own host —
+one host seating two attendees in a shared capacity-N slot is not double-booked with
+themselves.
+
+The same question, asked of a whole list of slots:
+
+```php
+Slot::bookable(requireFreeHost: true)->get();
+```
+
+A slot now also drops out when its availability has a host pool and **none** of that
+pool is free across it — what a member should be offered, as against what a leader may
+book into. An availability with no pool is never excluded (nobody to be busy), it is one
+SQL statement however many slots you ask about, and the flag is off by default, so
+`bookable()` on its own is unchanged.
+
 ### Offer
 
 ```php
@@ -196,10 +236,15 @@ offer on its own, whether or not a sweep has run.
 ### Query scopes
 
 `Availability::published()` · `Slot::bookable()` (open + published availability +
-future + notice/horizon satisfied) · `Slot::upcoming()` · `Booking::active()` ·
-`Booking::upcoming()` · `Offer::pending()` (pending **and** unexpired) · `Slot::retired()` ·
-`forContext($model)` on `Availability`, `Booking`, `Offer`. Each time-based scope accepts an
-optional reference instant.
+future + notice/horizon satisfied; `requireFreeHost: true` adds the free-host filter) ·
+`Slot::upcoming()` · `Booking::active()` · `Booking::upcoming()` · `Offer::pending()`
+(pending **and** unexpired) · `Offer::pendingFor($party)` · `Offer::createdBy($party)` ·
+`Slot::retired()` · `forContext($model)` on `Availability`, `Booking`, `Offer`. Each
+time-based scope accepts an optional reference instant.
+
+`createdBy` is the one scope that must be entered from a builder —
+`Offer::query()->createdBy($leader)`, because `Offer::createdBy($leader)` reaches the
+relation of the same name.
 
 ### Events
 

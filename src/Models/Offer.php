@@ -146,6 +146,40 @@ class Offer extends Model
             });
     }
 
+    /**
+     * The invitee's live invitations: pending and unexpired, offered to this
+     * party. Both halves of the morph are matched, so two parties of different
+     * types can never be confused for one another.
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopePendingFor(Builder $query, Model $offeredTo): Builder
+    {
+        return $query
+            ->pending()
+            ->where($this->qualifyColumn('offered_to_type'), $offeredTo->getMorphClass())
+            ->where($this->qualifyColumn('offered_to_id'), (string) $offeredTo->getKey());
+    }
+
+    /**
+     * Every offer this party raised, whatever became of it.
+     *
+     * Enter it from a builder — `Offer::query()->createdBy($party)`. The model
+     * already carries a `createdBy()` relation of the same name, and a public
+     * method outranks `__callStatic`, so the static form returns the relation
+     * rather than this scope (B39).
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeCreatedBy(Builder $query, Model $by): Builder
+    {
+        return $query
+            ->where($this->qualifyColumn('created_by_type'), $by->getMorphClass())
+            ->where($this->qualifyColumn('created_by_id'), (string) $by->getKey());
+    }
+
     public function isExpired(?CarbonInterface $now = null): bool
     {
         return $this->expires_at !== null && $this->expires_at->lessThanOrEqualTo(Slot::instant($now));

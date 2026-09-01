@@ -7,6 +7,36 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-01
+
+### Added
+
+- `Support\HostAvailability` — the read side of the booking-time overlap guard.
+  `busyBookings($host, $start, $end, $except = null)` returns the host's active
+  bookings in any role whose slot overlaps `[$start, $end)`, earliest slot first,
+  with one booking optionally excluded; `isFree(...)` is the same question as a
+  bool; `freeHosts($availability, $slot, $role = 'host')` returns the pool
+  members with nothing else booked across the slot, as the consumer's own host
+  models, in pool order. None of them picks a host — that stays the consumer's
+  (spec D8/D15).
+- `Slot::bookable($now, requireFreeHost: true)` — additionally drops a slot whose
+  availability has a host pool and none of whose pool is free across it: what a
+  member may be offered, as against what a leader may book into. An availability
+  with no host pool is never excluded, and it stays one SQL statement however
+  many slots are asked about.
+- `Offer::pendingFor($party)` (pending, unexpired, offered to that party) and
+  `Offer::createdBy($party)` scopes. `createdBy` must be entered from a builder
+  (`Offer::query()->createdBy($party)`); the model's relation of the same name
+  wins the static call.
+
+### Changed
+
+- `OverlapCheck::query()` is public, and the half-open overlap predicate it used
+  inline is now `OverlapCheck::overlappingSlots()` — one definition of "overlaps"
+  for every Eloquent caller. No behaviour change: a booking ending exactly when
+  another starts still does not conflict.
+- `Slot::bookable()` called without the new argument is unchanged.
+
 ## [0.1.2] - 2026-09-01
 
 ### Added

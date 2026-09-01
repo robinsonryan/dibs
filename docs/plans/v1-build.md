@@ -43,6 +43,10 @@ Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here)
 | B34 | `AssignBookingHost` refuses **only** a cancelled booking (`InvalidTransition::for($booking, $status, BookingStatus::Booked)`), not every non-`booked` one. | Asked for as "refuse if not active" in one line of the brief and "throws when the booking is cancelled" in the next; the two must agree with `UnassignBookingHost`, which is explicitly allowed on a completed booking so its record can be corrected. Being able to clear a completed booking's interviewer but not set the right one is half a feature. `InvalidTransition` rather than a new exception type, per B22 — consumers already catch it from the outcome actions, and "cannot move from cancelled to booked" is the sense of the refusal. |
 | B35 | A `dibs_booking_hosts` row whose host record no longer resolves is still deleted by `UnassignBookingHost`, but fires no `BookingHostUnassigned` (the event's `previousHost` is non-nullable); `AssignBookingHost` reports it as `previousHost: null`. | Same rule as B21 — a consumer-deleted host must not block the operation, and an event cannot carry a model that is gone. |
 | B36 | `AssignBookingHost`'s idempotence test is "the role's rows are exactly one and it names this host". Any other shape (legacy multi-row) is replaced, with `previousHost` the earliest row's host by `id` (uuid v7 = creation order). | D14 says one host per role; the multi-row case can only be pre-D14 data, and silently keeping it would defeat the replace. |
+| B37 | The overlap predicate is extracted to `OverlapCheck::overlappingSlots($slots, $start, $end)` and every caller reads it: `OverlapCheck::for/forSlot`, `HostAvailability::busyBookings/freeHosts`. The `Slot::bookable(requireFreeHost:)` filter restates it in SQL as column-to-column comparisons because it compares two slot rows, not a row to two bound instants — commented as the same rule. | "Overlaps" must have one definition (D15). The scope's version cannot call the Eloquent one without an N+1. |
+| B38 | Host-availability questions ignore bookings on the slot being asked about — `freeHosts` and the `requireFreeHost` filter both exclude them. | The already-ratified R19/`forSlot` rule. Without it a capacity-N slot with a pool of one would leave `bookable(requireFreeHost: true)` the instant its own first booking landed, contradicting the capacity rule (R15). |
+| B39 | `Offer::createdBy()` must be entered from a builder — `Offer::query()->createdBy($u)`, not `Offer::createdBy($u)`. | The model already has a `createdBy()` morphTo relation; a public method wins over `__callStatic`, so the static form returns the relation. Renaming the scope was rejected — the name is the one the consumer asked for, and every other scope is used on a builder anyway. Documented on the scope and in the README. |
+| B40 | `HostAvailability::freeHosts` orders the pool by `id` (uuid v7 = creation order) to make "pool order" a fact rather than whatever Postgres returns. | The signature promises an order; an unordered scan does not have one. |
 
 ## Module ownership (disjoint)
 
@@ -73,6 +77,13 @@ Worktrees: `.claude/worktrees/<mod>` on branches `feature/<mod>`; test DB per tr
 All four waves complete. Final gate on `feature/v1`: Pint 109 files, PHPStan L8 zero-ignore, Rector clean,
 Pest **256 passed / 724 assertions** after the 2026-09-01 follow-up and its remediation (context, retired, connection fix, regeneration lock). Every review finding fixed
 with a mutation-verified test (`docs/plans/reviews/*.md`). Worktrees and `testing_wt_*` databases torn down.
+
+**0.2.0 (2026-09-01, solo on `develop`)** — host availability queries, the `requireFreeHost`
+filter on `Slot::bookable()`, and the two offer scopes (spec D15, R45–R48). Gate: Pint 122 files,
+PHPStan L8 zero-ignore, Rector clean, Pest **298 passed / 812 assertions**. Every new assertion was
+mutation-checked: dropping the same-slot exclusion, closing the half-open interval, dropping the
+no-pool escape hatch, decorrelating the pool subquery, ignoring `$except`, and dropping the
+slot-start ordering each turn exactly the intended test red.
 
 ## Review findings
 

@@ -47,23 +47,40 @@ final class OverlapCheck
     }
 
     /**
+     * The host's active bookings in any role, unfetched — the shared spine of
+     * the booking-time guard and of `Support\\HostAvailability` (D15).
+     *
      * @return Builder<Booking>
      */
-    private static function query(Model $host, CarbonInterface $start, CarbonInterface $end): Builder
+    public static function query(Model $host, CarbonInterface $start, CarbonInterface $end): Builder
     {
-        $from = Slot::instant($start);
-        $to = Slot::instant($end);
-
         $bookingHost = Dibs::make(BookingHost::class);
-        $slot = Dibs::make(Slot::class);
 
         return Dibs::query(Booking::class)
             ->active()
             ->whereHas('hosts', fn (Builder $hosts): Builder => $hosts
                 ->where($bookingHost->qualifyColumn('host_type'), $host->getMorphClass())
                 ->where($bookingHost->qualifyColumn('host_id'), (string) $host->getKey()))
-            ->whereHas('slot', fn (Builder $slots): Builder => $slots
-                ->where($slot->qualifyColumn('starts_at'), '<', $to)
-                ->where($slot->qualifyColumn('ends_at'), '>', $from));
+            ->whereHas('slot', fn (Builder $slots): Builder => self::overlappingSlots($slots, $start, $end));
+    }
+
+    /**
+     * The one definition of "overlaps" in this package: a slot overlaps
+     * `[$start, $end)` when it starts before the end and ends after the start,
+     * so a slot that ends exactly when the window opens does not conflict.
+     * Every Eloquent caller reads it here. `Slot::bookable(requireFreeHost:)`
+     * restates it as column-to-column SQL because it compares two slot rows
+     * rather than a row against two bound instants (B37).
+     *
+     * @param  Builder<Model>  $slots
+     * @return Builder<Model>
+     */
+    public static function overlappingSlots(Builder $slots, CarbonInterface $start, CarbonInterface $end): Builder
+    {
+        $slot = Dibs::make(Slot::class);
+
+        return $slots
+            ->where($slot->qualifyColumn('starts_at'), '<', Slot::instant($end))
+            ->where($slot->qualifyColumn('ends_at'), '>', Slot::instant($start));
     }
 }
