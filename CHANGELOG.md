@@ -25,3 +25,10 @@ Behavior changes land here in the commit that makes them, not at tag time.
   `UpdateAvailabilityGeometry`, `DuplicateAvailability`, `DeleteAvailability`.
 - `Support\SlotGrid` — the slot positions an `AvailabilityGeometry` describes
   (duration + padding, trailing remainder unused).
+- Booking actions: `BookSlot` (row-locked, capacity-aware, auto-assigns a
+  pool of one per role, optional host-overlap guard), `CreateDirectBooking`,
+  `CancelBooking` (releases the slot per the origin rule), `CompleteBooking`,
+  `MarkNoShow`.
+- `OverlapCheck::for()` — a host's overlapping active bookings, as public API;
+  `HostAssignment` data object for supplying hosts to a direct booking;
+  `ReleaseSlot` — the origin rule (availability-born → open, unbooked adhoc → deleted).

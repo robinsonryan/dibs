@@ -24,6 +24,9 @@ Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here)
 | B16 | DuplicateAvailability also copies context, min-notice/max-horizon and meta, not just geometry/type/name/location/pool. | Same tenant, same booking rules; D1 makes notice/horizon geometry parameters. |
 | B17 | The overlap guard checks the hosts **being assigned** to the new booking (auto-assigned per D9, or supplied to CreateDirectBooking), not every pooled host. | Refusing because some unassigned pool member is busy would be a solver (D8). |
 | B18 | CreateDirectBooking drops the spec's optional `context?` argument: adhoc slots have no context columns. | Nowhere to store it; consumers scope through the booking's parties/hosts. |
+| B19 | `CompleteBooking` / `MarkNoShow` leave the slot `booked` (release belongs to cancellation only, §5.2); a completed slot is in the past and never re-bookable anyway. | Spec assigns slot release to CancelBooking only. |
+| B20 | `CreateDirectBooking` creates the adhoc slot `open` and lets the shared settle step flip it to `booked` — identical at capacity 1, correct above it. | One code path (D4). |
+| B21 | A pool row whose host record no longer resolves is skipped by auto-assign rather than assigned or thrown on. | Consumer deleted a host; booking must still succeed. |
 | B13 | Concurrency-safe slot fullness: BookSlot counts active bookings under the row lock rather than trusting `status`. | `status` is a derived cache; the lock + count is the truth. |
 
 ## Module ownership (disjoint)
