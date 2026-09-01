@@ -15,3 +15,10 @@
   through `Dibs::query(Slot::class)->where('availability_id', …)` so lock, check and
   delete share the transaction's connection. Found by the remediation pass
   (2026-09-01); out of the reviewed findings' scope.~~ **Fixed in the 2026-09-01 follow-up build (R42).**
+- **AcceptOffer re-hydrates the offer's context model** to pass through
+  `BookingOptions::context`; if the tenant row was deleted while the offer was
+  pending, the booking silently inherits the availability's context (or none)
+  instead of the offer's stored scope. Proposed fix: let `BookingOptions` carry
+  a stored `(context_type, context_id)` pair alongside the model form, and have
+  `AcceptOffer` pass the pair. Found by the follow-up review (2026-09-01);
+  consumers deleting tenants with pending offers is the only trigger.

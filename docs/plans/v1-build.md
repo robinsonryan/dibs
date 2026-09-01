@@ -36,6 +36,8 @@ Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here)
 | B28 | **Ryan, 2026-09-01:** tenancy `context` is stamped on bookings (copied from the availability, or supplied) and on offers (supplied); `forContext()` scopes on Availability/Booking/Offer. Supersedes B18. | Direct appointments and all-adhoc offers had no path to a ward; ccstake is multi-org. |
 | B29 | **Ryan, 2026-09-01:** an open slot with cancelled-booking history displaced by a regeneration becomes `retired` (fourth slot state) rather than staying bookable at its old time. Supersedes B15's "survives and blocks its position". | Regular grid after reshape; history kept. |
 | B30 | Connection-pinning defect (QUEUE) fixed in the same follow-up: the two availability actions query slots via `Dibs::query(Slot::class)`. | Ryan chose fix-now. |
+| B31 | A spent-history open slot is retired **only when displaced** — no position of the new grid is identical to it; an identical position keeps the slot as-is (it *is* the grid slot). Re-submitting the same geometry changes nothing. | §2 says "displaced by a grid regeneration"; without this, identical edits duplicate slots (follow-up review). |
+| B32 | Regeneration locks every slot row of the availability `FOR UPDATE` before deleting/retiring, so a concurrent BookSlot serialises behind it (READ COMMITTED re-checks the row but not the `NOT EXISTS` subquery). | Follow-up review BLOCKER, reproduced. |
 | B13 | Concurrency-safe slot fullness: BookSlot counts active bookings under the row lock rather than trusting `status`. | `status` is a derived cache; the lock + count is the truth. |
 
 ## Module ownership (disjoint)
