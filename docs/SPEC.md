@@ -1,6 +1,6 @@
 # Dibs — headless booking engine (package spec, v1)
 
-**Package:** `robinsonryan/dibs` · **Namespace:** `RobinsonRyan\Dibs` · **Status:** v1 released as 0.1.0 / 0.1.1 (2026-09-01); work continues on `develop`
+**Package:** `robinsonryan/dibs` · **Namespace:** `RobinsonRyan\Dibs` · **Status:** v1 released as 0.1.0 / 0.1.1 / 0.1.2 (2026-09-01); work continues on `develop`
 **First consumer:** ccstake (bishopric interviews, tithing settlement, calling-extension meetings). The
 ccstake integration gets its **own spec in the ccstake repo**; §10 here is informative only.
 
@@ -51,6 +51,7 @@ for the `bookedFor`/`bookedBy` relationship pair.
 | D11 | An outstanding Offer is a promise: accepting it works even if the Availability has since been closed, and notice/horizon checks do **not** apply to offer acceptance (the person was invited explicitly). |
 | D12 | Offers hold capacity-1 slots only in v1 (holding one unit of a capacity-N slot is deferred). |
 | D13 | Booking `type` is a consumer-defined string, denormalized onto the booking at creation (default: the availability's `type`) so bookings survive availability edits. |
+| D14 | **Host assignment is mutable after booking, one host per role.** Auto-assign (D9) is a convenience, not a commitment: a booking's host for a given role can be set, replaced or cleared afterwards by `AssignBookingHost` / `UnassignBookingHost`, so a pool member can take an unassigned booking and an administrator can reassign one. Assigning is a **replace**, never an add — a role holds at most one host on a booking (the many-to-many of D7 is across roles, not within one). Consumers never write `dibs_booking_hosts` rows themselves. A cancelled booking is frozen; a completed or no-show one may still have its record corrected (added 2026-09-01). |
 
 ## 4. Data model
 
@@ -174,6 +175,16 @@ each firing its event **after commit** (`DB::afterCommit`). Invalid state transi
   unlistable open row because it has a booking).
 - **CompleteBooking** / **MarkNoShow**: from `booked` only; `completed ↔ no_show` reclassification is
   allowed (both are post-hoc judgments); `cancelled` is terminal.
+- **AssignBookingHost(booking, host, role = 'host', guardHostOverlap = false)** (D14): `SELECT … FOR
+  UPDATE` on the booking row, then **replace** the role's assignment with this one host. Refused on a
+  cancelled booking (`InvalidTransition`). Assigning the host that already holds the role is a no-op:
+  nothing written, no event. With `guardHostOverlap: true` the same `OverlapCheck` the booking path uses
+  runs first, and an overlapping active booking throws `HostOverlap` before anything is written. Fires
+  `BookingHostAssigned` (carrying the host displaced, if any) after commit.
+- **UnassignBookingHost(booking, role = 'host')** (D14): row-locked; deletes the role's assignment.
+  Refused on a cancelled booking; allowed on a completed or no-show one, whose record may still be
+  corrected. No rows for the role is a no-op, with no event. Fires `BookingHostUnassigned` per removed
+  host after commit.
 
 ### 5.3 Offers
 - **CreateOffer(offeredTo, slots, expiresAt?, createdBy?, message?, meta?, context?)**: `slots` is a mix of existing
@@ -197,8 +208,9 @@ satisfied), `Slot::upcoming()` (live, never retired), `Slot::retired()`, `Bookin
 ## 6. Events
 
 `RobinsonRyan\Dibs\Events`: `AvailabilityPublished`, `AvailabilityClosed`, `BookingCreated`,
-`BookingCancelled`, `BookingCompleted`, `BookingMarkedNoShow`, `OfferCreated`, `OfferAccepted`,
-`OfferWithdrawn`, `OfferExpired`. Each carries the affected model(s), fully loaded. Consumers hang
+`BookingCancelled`, `BookingCompleted`, `BookingMarkedNoShow`, `BookingHostAssigned`,
+`BookingHostUnassigned`, `OfferCreated`, `OfferAccepted`, `OfferWithdrawn`, `OfferExpired`. Each
+carries the affected model(s), fully loaded. Consumers hang
 notifications, reminders, and workflow side effects (e.g. ccstake's calling follow-up stamp) on these.
 
 ## 7. Configuration & extension (`config/dibs.php`)
@@ -268,6 +280,8 @@ per the `verification` skill before any "done" claim.
 | R40 | Bookings and offers carry `context`; `BookSlot` copies the availability's, direct bookings/offers take it as an argument; `forContext()` scopes on Availability/Booking/Offer | `BookSlot` stamps `context` (option ?? availability); `CreateOffer(..., ?Model $context)`; `AcceptOffer` propagates; `scopeForContext` on Availability/Booking/Offer | `tests/Feature/Foundation/ContextTest.php`; context cases in `BookSlotTest`, `CreateDirectBookingTest`, `CreateOfferTest`, `AcceptOfferTest` | Done |
 | R41 | Regeneration retires (never deletes) an open slot that has booking rows; retired slots leave `bookable()` and `upcoming()`; their position is reused | `UpdateAvailabilityGeometry` retires open slots with spent history (`whereDoesntHave('activeBookings')`); `SlotStatus::Retired`; `Slot::retired()`; `upcoming()` excludes; `ReleaseSlot` treats retired as terminal | `UpdateAvailabilityGeometryTest` retirement cases (incl. partly-full slot survives), `ScopesTest`, `ReleaseSlotTest`, `DeleteAvailabilityTest` | Done |
 | R42 | `DeleteAvailability` / `UpdateAvailabilityGeometry` query slots through `Dibs::query()` so lock, check and delete run on the transaction's connection | `DeleteAvailability`, `UpdateAvailabilityGeometry` via `Dibs::lock()` + `Dibs::query(Slot::class)` | `tests/Concurrency/AvailabilityConcurrencyTest.php` pinned-model cases (delete case red before the fix) | Done |
+| R43 | `AssignBookingHost(booking, host, role, guardHostOverlap)` replaces the role's assignment from the booking's locked row: one row per role afterwards, same host + role is a no-op with no event, cancelled booking throws, the optional overlap guard throws `HostOverlap` before any write, roles are independent; fires `BookingHostAssigned` with the displaced host after commit (D14) | `Actions\AssignBookingHost`, `Events\BookingHostAssigned`, reuses `Support\OverlapCheck::forSlot` | `tests/Feature/Booking/AssignBookingHostTest.php`; `tests/Concurrency/BookingHostConcurrencyTest.php` (lock mutated out → red) | Done |
+| R44 | `UnassignBookingHost(booking, role)` deletes the role's assignment from the booking's locked row; no rows is a no-op with no event; cancelled booking throws, completed/no-show allowed; fires `BookingHostUnassigned` per removed host after commit (D14) | `Actions\UnassignBookingHost`, `Events\BookingHostUnassigned` | `tests/Feature/Booking/UnassignBookingHostTest.php` | Done |
 
 ## 9a. Non-goals (explicit exclusions)
 

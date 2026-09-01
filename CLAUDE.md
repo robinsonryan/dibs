@@ -6,9 +6,9 @@ Composer name: `robinsonryan/dibs` — a **library**, not an application.
 
 ## The spec is the acceptance contract
 
-**`docs/SPEC.md`** holds the approved v1 spec: lexicon, thirteen design decisions
-(D1–D13), full data model, behaviors, a 42-row requirements ledger (complete as of
-0.1.1, 2026-09-01), and twelve explicit non-goals. New work amends the spec first,
+**`docs/SPEC.md`** holds the approved v1 spec: lexicon, fourteen design decisions
+(D1–D14), full data model, behaviors, a 44-row requirements ledger (complete as of
+0.1.2, 2026-09-01), and twelve explicit non-goals. New work amends the spec first,
 then builds against it requirement-by-requirement, keeping the ledger's status
 column current — no unqualified "done" (see the `verification` skill).
 

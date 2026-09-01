@@ -7,6 +7,25 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-01
+
+### Added
+
+- `AssignBookingHost(booking, host, role = 'host', guardHostOverlap = false)` —
+  changes who fulfils a booking after it exists: a pool member takes an
+  unassigned booking, an administrator reassigns one. Decided from the booking's
+  locked row; **replaces** the role's assignment (one host per role); assigning
+  the host who already holds the role writes nothing and fires nothing; the
+  optional overlap guard runs the same `OverlapCheck` the booking path uses and
+  throws `HostOverlap` before anything is written. Fires `BookingHostAssigned`
+  (with the displaced host, if any) after commit.
+- `UnassignBookingHost(booking, role = 'host')` — clears the role's assignment
+  from the locked row, firing `BookingHostUnassigned` per host removed. No rows
+  for the role is a no-op, with no event.
+- Events `BookingHostAssigned` and `BookingHostUnassigned`.
+- Both actions refuse a **cancelled** booking (`InvalidTransition`) and allow a
+  completed or no-show one, whose record may still be corrected (spec D14).
+
 ## [0.1.1] - 2026-09-01
 
 ### Fixed

@@ -133,6 +133,30 @@ $booking = (new CreateDirectBooking)(
 and is public regardless of the guard option. It is a query, not a solver: the package
 never computes joint availability across resources.
 
+### Changing a booking's host
+
+Auto-assign only settles the roles whose pool holds one host. Everything after that —
+someone taking an unassigned booking, an administrator reassigning or clearing one —
+goes through these two actions; never write `dibs_booking_hosts` rows yourself.
+
+```php
+use RobinsonRyan\Dibs\Actions\{AssignBookingHost, UnassignBookingHost};
+
+(new AssignBookingHost)($booking, $bishop, 'interviewer');
+// row-locked; replaces whoever held that role (one host per role); assigning the
+// same host again writes nothing and fires nothing; fires BookingHostAssigned
+// carrying the displaced host
+
+(new AssignBookingHost)($booking, $bishop, 'interviewer', guardHostOverlap: true);
+// throws HostOverlap — and writes nothing — if the bishop already has an
+// overlapping active booking elsewhere
+
+(new UnassignBookingHost)($booking, 'interviewer');  // fires BookingHostUnassigned
+```
+
+Both refuse a cancelled booking (`InvalidTransition`); a completed or no-show booking
+may still have its record corrected. Both return the booking with `hosts.host` loaded.
+
 ### Offer
 
 ```php
@@ -181,9 +205,10 @@ optional reference instant.
 
 `RobinsonRyan\Dibs\Events`: `AvailabilityPublished`, `AvailabilityClosed`,
 `BookingCreated`, `BookingCancelled`, `BookingCompleted`, `BookingMarkedNoShow`,
-`OfferCreated`, `OfferAccepted`, `OfferWithdrawn`, `OfferExpired`. Each carries the
-affected model(s) with their relations loaded and fires after the transaction commits.
-Hang notifications, reminders and workflow side effects on them.
+`BookingHostAssigned`, `BookingHostUnassigned`, `OfferCreated`, `OfferAccepted`,
+`OfferWithdrawn`, `OfferExpired`. Each carries the affected model(s) with their
+relations loaded and fires after the transaction commits. Hang notifications,
+reminders and workflow side effects on them.
 
 ### Exceptions
 
