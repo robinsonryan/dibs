@@ -19,6 +19,11 @@ Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here)
 | B10 | `Slot::bookable()` binds PHP `CarbonImmutable::now('UTC')` as the reference instant and does interval math in SQL (`make_interval`). | Testable with `Carbon::setTestNow`; UTC-only (D10/R36). |
 | B11 | Morph `*_id` columns are `string`, `*_type` string; no `morphs()` helper. | Consumers may key by uuid or bigint; the package never assumes. |
 | B12 | The suite registers a `Relation::morphMap` for its fixtures (`user`, `room`, `organization`), so stored `*_type` values are aliases, proving the package respects the consumer's map. | Spec §4. |
+| B14 | Package relies on Laravel's default UTC application timezone for Eloquent date serialisation; no custom `$dateFormat`. Bound reference instants are cast `::timestamptz` in SQL. | Fleet apps run UTC; documented in README. |
+| B15 | Geometry regeneration deletes only open slots with **zero** booking rows; an open slot with a cancelled booking survives (FK restrict + D3) and blocks its grid position like held/booked. | D6 says "delete all open slots"; D3/R4 forbid deleting any slot with a booking row. D3 wins. |
+| B16 | DuplicateAvailability also copies context, min-notice/max-horizon and meta, not just geometry/type/name/location/pool. | Same tenant, same booking rules; D1 makes notice/horizon geometry parameters. |
+| B17 | The overlap guard checks the hosts **being assigned** to the new booking (auto-assigned per D9, or supplied to CreateDirectBooking), not every pooled host. | Refusing because some unassigned pool member is busy would be a solver (D8). |
+| B18 | CreateDirectBooking drops the spec's optional `context?` argument: adhoc slots have no context columns. | Nowhere to store it; consumers scope through the booking's parties/hosts. |
 | B13 | Concurrency-safe slot fullness: BookSlot counts active bookings under the row lock rather than trusting `status`. | `status` is a derived cache; the lock + count is the truth. |
 
 ## Module ownership (disjoint)
