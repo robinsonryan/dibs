@@ -7,6 +7,11 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-01
+
+First release: the v1 spec (`docs/SPEC.md`) built requirement-by-requirement.
+Supports Laravel 12 and 13 on PHP 8.2+ with PostgreSQL 18+.
+
 ### Added
 
 - Schema: seven `dibs_*` tables (availabilities, slots, availability_hosts,

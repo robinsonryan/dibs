@@ -210,7 +210,7 @@ notifications, reminders, and workflow side effects (e.g. ccstake's calling foll
 
 ## 8. Non-functional requirements
 
-- PHP ^8.2, `illuminate/*` ^11|^12|^13 (scaffold baseline); PostgreSQL 18+ (uuidv7 defaults) —
+- PHP ^8.2, `illuminate/*` ^12|^13 (ruled 2026-09-01: ^11 dropped — the dev constraints never resolve to it, so it was an untested promise); PostgreSQL 18+ (uuidv7 defaults) —
   documented in README; per fleet doctrine consumers are Postgres anyway.
 - `declare(strict_types=1)`, `final` classes, full types; Pint preset per `pint.json`; PHPStan level 8,
   `phpVersion: 80200`, zero `ignoreErrors`; Rector clean.
