@@ -22,10 +22,7 @@ final class WithdrawOffer
     public function __invoke(Offer $offer): Offer
     {
         return DB::transaction(function () use ($offer): Offer {
-            $locked = Dibs::query(Offer::class)
-                ->whereKey($offer->getKey())
-                ->lockForUpdate()
-                ->first();
+            $locked = Dibs::lock($offer);
 
             // A row that is no longer there cannot move anywhere.
             if (! $locked instanceof Offer) {

@@ -3,11 +3,13 @@
 declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Actions\CreateOffer;
 use RobinsonRyan\Dibs\Actions\ExpireOffers;
 use RobinsonRyan\Dibs\Enums\OfferStatus;
 use RobinsonRyan\Dibs\Models\Offer;
 use RobinsonRyan\Dibs\Models\Slot;
+use RobinsonRyan\Dibs\Support\Dibs;
 
 /**
  * A consumer's extended offer, substituted via config('dibs.models').
@@ -39,4 +41,30 @@ it('creates and sweeps a consumer\'s extended offer model (R35)', function (): v
 
     expect((new ExpireOffers)())->toBe(1)
         ->and($offer->refresh()->status)->toBe(OfferStatus::Expired);
+});
+
+it('locks a row back into the consumer\'s extended model, whichever class the caller holds (R35)', function (): void {
+    $offer = (new CreateOffer)(user('Invitee'), [Slot::factory()->create()]);
+
+    DB::transaction(function () use ($offer): void {
+        // Handed the extended class the consumer already has...
+        expect(Dibs::lock($offer))->toBeInstanceOf(OfferWithExtras::class);
+
+        // ...and handed a plain package model with the same key, which is what a
+        // caller gets from a query that never went through the class-map.
+        $plain = (new Offer)->forceFill(['id' => $offer->getKey()]);
+
+        expect(Dibs::lock($plain))->toBeInstanceOf(OfferWithExtras::class);
+    });
+});
+
+it('returns null from a lock on a row that is no longer there', function (): void {
+    $offer = (new CreateOffer)(user('Invitee'), [Slot::factory()->create()]);
+    $ghost = $offer->replicate();
+    $ghost->id = $offer->getKey();
+    Offer::query()->whereKey($offer->getKey())->delete();
+
+    DB::transaction(function () use ($ghost): void {
+        expect(Dibs::lock($ghost))->toBeNull();
+    });
 });
