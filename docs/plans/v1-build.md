@@ -28,8 +28,10 @@ Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here)
 | B20 | `CreateDirectBooking` creates the adhoc slot `open` and lets the shared settle step flip it to `booked` — identical at capacity 1, correct above it. | One code path (D4). |
 | B21 | A pool row whose host record no longer resolves is skipped by auto-assign rather than assigned or thrown on. | Consumer deleted a host; booking must still succeed. |
 | B22 | A slot/offer row that vanished between the caller's copy and the lock is reported as `SlotNotOfferable` / `OfferNotAcceptable` ("no longer exists"); `WithdrawOffer` on a vanished offer throws `InvalidTransition` from the in-memory status. | No new exception types for a corner case. |
-| B23 | Adhoc offer specs are not checked for a future start at creation; `BookSlot` refuses a past slot at acceptance. | One gate, not two divergent ones. |
+| B23 | ~~Adhoc offer specs are not checked at creation~~ **Superseded by B25** after review (offers #2). | — |
 | B24 | `CreateOffer` clamps the token length to `max(40, config('dibs.token_length'))`. | A misconfigured consumer cannot weaken the only lookup key. |
+| B25 | `AdhocSlotSpec::ensureValid()` (end after start, start in the future) runs in `CreateOffer` and `CreateDirectBooking`; `CreateOffer` also refuses an `expiresAt` not after now. An invalid spec writes nothing. | An unbookable held slot only `WithdrawOffer` could free is worse than an early `InvalidArgumentException`. |
+| B26 | `ExpireOffers` isolates failures per offer and rethrows the first after the loop; successfully expired offers stay expired (own transactions). | A sweep that dies on the offer someone is accepting must not leave every other overdue offer pending. |
 | B13 | Concurrency-safe slot fullness: BookSlot counts active bookings under the row lock rather than trusting `status`. | `status` is a derived cache; the lock + count is the truth. |
 
 ## Module ownership (disjoint)
@@ -55,6 +57,12 @@ Worktrees: `.claude/worktrees/<mod>` on branches `feature/<mod>`; test DB per tr
 2. Builders A + B in parallel → merge into `feature/v1` → full gate.
 3. Builder C (offers) + reviewers for A and B in parallel.
 4. Merge C → full gate → reviewer C → single remediator → full gate → audit.
+
+## Status (2026-09-01)
+
+All four waves complete. Final gate on `feature/v1`: Pint 109 files, PHPStan L8 zero-ignore, Rector clean,
+Pest **231 passed / 631 assertions** (10 two-connection concurrency tests). Every review finding fixed
+with a mutation-verified test (`docs/plans/reviews/*.md`). Worktrees and `testing_wt_*` databases torn down.
 
 ## Review findings
 

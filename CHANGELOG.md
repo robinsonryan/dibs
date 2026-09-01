@@ -39,3 +39,25 @@ Behavior changes land here in the commit that makes them, not at tag time.
   and release the losers per the origin rule), `WithdrawOffer`, and the
   idempotent `ExpireOffers` sweep for a consumer's scheduler (one
   `OfferExpired` per offer, each in its own transaction).
+- `Dibs::lock(Model)` — a `FOR UPDATE` re-read through the class-map; every
+  state transition in the package decides from a locked row, never a snapshot.
+- `OverlapCheck::forSlot(host, slot)` — the overlap question with that slot
+  itself excluded (what the booking guard uses); `OverlapCheck::for()` is unchanged.
+- `CreateOffer` and `CreateDirectBooking` reject an inverted, zero-length or
+  already-past adhoc window, and `CreateOffer` rejects an expiry at or before
+  now, with `InvalidArgumentException` before anything is written.
+- `ExpireOffers` sweeps longest-overdue first, keeps going when one offer
+  cannot be settled (e.g. someone is accepting it), and rethrows that first
+  failure once the sweep has finished.
+- Repeated `HostAssignment`s fold to one assignment; a slot named twice in
+  one offer is held once; existing slots are locked in key order.
+- `DuplicateAvailability` copies every column of the source (a consumer
+  subclass's extra columns travel with the copy).
+
+### Changed
+
+- `PublishAvailability`, `CloseAvailability`, `UpdateAvailabilityGeometry`,
+  `CancelBooking`, `CompleteBooking` and `MarkNoShow` return the freshly
+  locked model instance rather than mutating the one passed in.
+- A capacity-N slot with `guardHostOverlap: true` seats a second party under
+  the same host instead of throwing `HostOverlap`.

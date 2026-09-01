@@ -1,6 +1,6 @@
 # Dibs — headless booking engine (package spec, v1)
 
-**Package:** `robinsonryan/dibs` · **Namespace:** `RobinsonRyan\Dibs` · **Status:** spec approved, not built
+**Package:** `robinsonryan/dibs` · **Namespace:** `RobinsonRyan\Dibs` · **Status:** v1 built on `feature/v1` (2026-09-01), untagged
 **First consumer:** ccstake (bishopric interviews, tithing settlement, calling-extension meetings). The
 ccstake integration gets its **own spec in the ccstake repo**; §10 here is informative only.
 
@@ -258,7 +258,7 @@ per the `verification` skill before any "done" claim.
 | R35 | Config `models` map substitutes extended models throughout the package's own queries | `Support\Dibs::model/make/query`; relationships + factory `modelName()` resolve through it | `tests/Feature/Foundation/ModelResolverTest.php` | Done |
 | R36 | Package stores/compares UTC instants only; no timezone conversion anywhere in package code (D10) | `CarbonImmutable::now('UTC')` / `Slot::instant()` everywhere; `->utc()` normalisation before persistence only | grep audit 2026-09-01: no `timezone`/`setTimezone`/`tz(`/`parse` in `src/`; `SlotGridTest` same-instant-across-offsets case | Done |
 | R37 | Test suite runs on real PostgreSQL via Testbench (taxon TestCase pattern); no SQLite anywhere | `tests/TestCase.php` (pgsql, per-worktree `testing_wt_<slug>`), `tests/Pest.php` | whole suite; `SchemaTest` asserts timestamptz/jsonb | Done |
-| R38 | `ddev composer quality` passes: Pint, PHPStan L8 zero-ignore, Rector check, full Pest suite | | | Not started |
+| R38 | `ddev composer quality` passes: Pint, PHPStan L8 zero-ignore, Rector check, full Pest suite | `composer quality` (`.githooks/pre-commit` runs it on every commit) | final run on `feature/v1` 2026-09-01: 231 passed / 631 assertions, PHPStan 0 errors, Rector clean | Done |
 | R39 | Factories exist for all models; states for each status | `database/factories/*Factory.php` | `tests/Feature/Foundation/FactoriesTest.php` | Done |
 
 ## 9a. Non-goals (explicit exclusions)
