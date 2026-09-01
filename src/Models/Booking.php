@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use RobinsonRyan\Dibs\Concerns\HasContext;
 use RobinsonRyan\Dibs\Concerns\HasUuidPrimaryKey;
 use RobinsonRyan\Dibs\Database\Factories\BookingFactory;
 use RobinsonRyan\Dibs\Enums\BookingStatus;
@@ -41,9 +42,10 @@ use RobinsonRyan\Dibs\Support\TablePrefixer;
  */
 class Booking extends Model
 {
+    use HasContext;
+
     /** @use HasFactory<BookingFactory> */
     use HasFactory;
-
     use HasUuidPrimaryKey;
 
     protected $guarded = [];
@@ -83,16 +85,6 @@ class Booking extends Model
     public function slot(): BelongsTo
     {
         return $this->belongsTo(Dibs::model(Slot::class), 'slot_id');
-    }
-
-    /**
-     * The owning scope, denormalised at creation (see the bookings migration).
-     *
-     * @return MorphTo<Model, $this>
-     */
-    public function context(): MorphTo
-    {
-        return $this->morphTo('context');
     }
 
     /**
@@ -161,19 +153,6 @@ class Booking extends Model
                 '>',
                 $now,
             ));
-    }
-
-    /**
-     * Records owned by the given context (tenant / organisation).
-     *
-     * @param  Builder<static>  $query
-     * @return Builder<static>
-     */
-    public function scopeForContext(Builder $query, Model $context): Builder
-    {
-        return $query
-            ->where($this->qualifyColumn('context_type'), $context->getMorphClass())
-            ->where($this->qualifyColumn('context_id'), (string) $context->getKey());
     }
 
     public function isActive(): bool

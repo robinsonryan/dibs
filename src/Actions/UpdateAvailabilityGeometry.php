@@ -6,13 +6,14 @@ namespace RobinsonRyan\Dibs\Actions;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Data\AvailabilityGeometry;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
+use RobinsonRyan\Dibs\Enums\BookingStatus;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Models\Availability;
+use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\Slot;
 use RobinsonRyan\Dibs\Support\Dibs;
 use RobinsonRyan\Dibs\Support\SlotGrid;
@@ -61,31 +62,112 @@ final class UpdateAvailabilityGeometry
      */
     private function regenerate(Availability $availability, array $positions): void
     {
-        // An open slot no booking ever touched is simply replaced by the new grid.
-        $this->slots($availability)
-            ->open()
-            ->whereDoesntHave('bookings')
-            ->delete();
+        // Every decision below is read from these locked rows, taken before a
+        // single row is deleted, retired or laid down (R43).
+        //
+        // The predicates cannot be left inside the DELETE and UPDATE statements
+        // themselves. Under READ COMMITTED, when such a statement waits on a row
+        // a rival `BookSlot` holds, PostgreSQL re-checks the *target row* once
+        // the rival commits but re-evaluates a `NOT EXISTS` subquery against the
+        // statement's original snapshot — the booking just committed is
+        // invisible, and a slot carrying a live claim gets retired out from
+        // under it. Holding the row locks first makes the rival queue behind
+        // this regeneration and re-validate the slot's status when it wakes.
+        $slots = $this->slots($availability)->lockForUpdate()->get();
 
-        // What is still open carries booking history, which is never deleted
-        // (D3). Where that history is spent — cancelled, completed, no-show —
-        // the slot steps aside as `retired`: out of every listing, but its row
-        // and its bookings stand (R41). An open slot still holding a live claim
-        // (a partly-full capacity-N slot) is not history, and is left alone.
-        $this->slots($availability)
-            ->open()
-            ->whereDoesntHave('activeBookings')
-            ->update(['status' => SlotStatus::Retired->value]);
+        // Read only once the locks are held, so this sees every booking a rival
+        // committed while it was waiting for them.
+        $withBookings = [];
+        $withLiveClaims = [];
 
-        // Everything left standing holds its position, even when it now falls
-        // outside the window (D6): held, booked, and the open slots with live
-        // claims. Only a retired slot steps aside, and its position is reused.
-        $survivors = $this->slots($availability)
-            ->where(Dibs::make(Slot::class)->qualifyColumn('status'), '!=', SlotStatus::Retired->value)
-            ->get();
+        if ($slots->isNotEmpty()) {
+            $bookings = Dibs::query(Booking::class)
+                ->whereIn('slot_id', $slots->modelKeys())
+                ->get(['slot_id', 'status']);
+
+            foreach ($bookings as $booking) {
+                $withBookings[$booking->slot_id] = true;
+
+                if ($booking->status === BookingStatus::Booked) {
+                    $withLiveClaims[$booking->slot_id] = true;
+                }
+            }
+        }
+
+        // What stands whatever the new grid says (D6): held, booked, and the
+        // open slots still holding a live claim — a partly-full capacity-N slot
+        // is not history. They keep their position even when it now falls
+        // outside the window, and the grid lays nothing over them.
+        /** @var list<Slot> $standing */
+        $standing = [];
+        /** @var list<Slot> $undecided */
+        $undecided = [];
+
+        foreach ($slots as $slot) {
+            // Already stepped aside on an earlier regeneration: neither deleted
+            // (its bookings are history, D3) nor allowed to block a position.
+            if ($slot->status === SlotStatus::Retired) {
+                continue;
+            }
+
+            if ($slot->status !== SlotStatus::Open || isset($withLiveClaims[(string) $slot->getKey()])) {
+                $standing[] = $slot;
+
+                continue;
+            }
+
+            $undecided[] = $slot;
+        }
+
+        $survivors = $standing;
+        /** @var array<int, true> $filled */
+        $filled = [];
+        /** @var list<string> $doomed */
+        $doomed = [];
+        /** @var list<string> $retiring */
+        $retiring = [];
+
+        foreach ($undecided as $slot) {
+            $key = (string) $slot->getKey();
+            $position = $this->positionOf($positions, $slot);
+
+            // This slot already *is* one of the new grid's positions, to the
+            // instant: it is not displaced by anything, so it keeps its row, its
+            // id and its status, and that position is not laid down twice. A
+            // position the grid would skip anyway — because a held or booked
+            // slot overlaps it — cannot rescue a slot, or the regeneration would
+            // leave an open slot straddling a survivor.
+            if ($position !== null && ! isset($filled[$position]) && ! $this->overlapsAny($standing, $positions[$position])) {
+                $filled[$position] = true;
+                $survivors[] = $slot;
+
+                continue;
+            }
+
+            // Displaced. An open slot no booking ever touched is simply replaced
+            // by the new grid; one whose history is spent — cancelled,
+            // completed, no-show — cannot be deleted (D3) and steps aside as
+            // `retired` instead (R41): out of every listing, but its row and its
+            // bookings stand, and its position is free to be reused.
+            if (isset($withBookings[$key])) {
+                $retiring[] = $key;
+
+                continue;
+            }
+
+            $doomed[] = $key;
+        }
+
+        if ($doomed !== []) {
+            $this->slots($availability)->whereKey($doomed)->delete();
+        }
+
+        if ($retiring !== []) {
+            $this->slots($availability)->whereKey($retiring)->update(['status' => SlotStatus::Retired->value]);
+        }
 
         foreach ($positions as $position) {
-            if ($this->overlapsSurvivor($survivors, $position)) {
+            if ($this->overlapsAny($survivors, $position)) {
                 continue;
             }
 
@@ -114,14 +196,34 @@ final class UpdateAvailabilityGeometry
     }
 
     /**
-     * @param  Collection<int, Slot>  $survivors
+     * The index of the generated position this slot exactly is — same start and
+     * same end, to the instant — or null when the new grid has displaced it.
+     *
+     * @param  list<array{starts_at: CarbonImmutable, ends_at: CarbonImmutable}>  $positions
+     */
+    private function positionOf(array $positions, Slot $slot): ?int
+    {
+        foreach ($positions as $index => $position) {
+            if ($position['starts_at']->equalTo($slot->starts_at) && $position['ends_at']->equalTo($slot->ends_at)) {
+                return $index;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  list<Slot>  $slots
      * @param  array{starts_at: CarbonImmutable, ends_at: CarbonImmutable}  $position
      */
-    private function overlapsSurvivor(Collection $survivors, array $position): bool
+    private function overlapsAny(array $slots, array $position): bool
     {
-        return $survivors->contains(
-            fn (Slot $slot): bool => $position['starts_at']->lessThan($slot->ends_at)
-                && $position['ends_at']->greaterThan($slot->starts_at),
-        );
+        foreach ($slots as $slot) {
+            if ($position['starts_at']->lessThan($slot->ends_at) && $position['ends_at']->greaterThan($slot->starts_at)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

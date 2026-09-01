@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
+use RobinsonRyan\Dibs\Concerns\HasContext;
 use RobinsonRyan\Dibs\Concerns\HasUuidPrimaryKey;
 use RobinsonRyan\Dibs\Database\Factories\OfferFactory;
 use RobinsonRyan\Dibs\Enums\OfferStatus;
@@ -41,9 +42,10 @@ use RobinsonRyan\Dibs\Support\TablePrefixer;
  */
 class Offer extends Model
 {
+    use HasContext;
+
     /** @use HasFactory<OfferFactory> */
     use HasFactory;
-
     use HasUuidPrimaryKey;
 
     protected $guarded = [];
@@ -75,16 +77,6 @@ class Offer extends Model
     protected static function newFactory(): OfferFactory
     {
         return OfferFactory::new();
-    }
-
-    /**
-     * The owning scope, supplied at creation.
-     *
-     * @return MorphTo<Model, $this>
-     */
-    public function context(): MorphTo
-    {
-        return $this->morphTo('context');
     }
 
     /**
@@ -151,19 +143,6 @@ class Offer extends Model
                     ->whereNull($this->qualifyColumn('expires_at'))
                     ->orWhere($this->qualifyColumn('expires_at'), '>', $now);
             });
-    }
-
-    /**
-     * Records owned by the given context (tenant / organisation).
-     *
-     * @param  Builder<static>  $query
-     * @return Builder<static>
-     */
-    public function scopeForContext(Builder $query, Model $context): Builder
-    {
-        return $query
-            ->where($this->qualifyColumn('context_type'), $context->getMorphClass())
-            ->where($this->qualifyColumn('context_id'), (string) $context->getKey());
     }
 
     public function isExpired(?CarbonInterface $now = null): bool
