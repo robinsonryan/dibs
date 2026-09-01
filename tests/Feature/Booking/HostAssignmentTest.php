@@ -123,3 +123,38 @@ it('books with the guard on when the assigned host is free', function (): void {
     expect((new BookSlot)($slot, $member, $member, new BookingOptions(guardHostOverlap: true))->hosts()->count())
         ->toBe(1);
 });
+
+it('does not count the very slot being claimed as the host’s own conflict (R19)', function (): void {
+    // One interviewer, one shared slot with room for two: the second attendee
+    // is not clashing with the first, they are sitting in the same session.
+    $availability = Availability::factory()->published()->create();
+    $alice = user('Alice');
+    AvailabilityHost::factory()->for($availability)->host($alice, 'interviewer')->create();
+
+    $slot = Slot::factory()->for($availability)->capacity(2)->create();
+
+    $first = (new BookSlot)($slot->fresh(), user('Member One'), user('Member One'), new BookingOptions(guardHostOverlap: true));
+    $second = (new BookSlot)($slot->fresh(), user('Member Two'), user('Member Two'), new BookingOptions(guardHostOverlap: true));
+
+    expect($first->hosts()->count())->toBe(1)
+        ->and($second->hosts()->count())->toBe(1)
+        ->and(Booking::active()->count())->toBe(2)
+        ->and($slot->fresh()->status->value)->toBe('booked');
+});
+
+it('still refuses when the clash is on a different overlapping slot (R19)', function (): void {
+    $availability = Availability::factory()->published()->create();
+    $alice = user('Alice');
+    AvailabilityHost::factory()->for($availability)->host($alice, 'interviewer')->create();
+
+    $slot = Slot::factory()->for($availability)->capacity(2)->create();
+    $clash = Slot::factory()->adhoc()->at($slot->starts_at)->create();
+    $existing = Booking::factory()->for($clash, 'slot')->bookedFor(user('Someone'))->create();
+    BookingHost::factory()->for($existing)->host($alice, 'interviewer')->create();
+
+    $member = user('Member');
+
+    expect(fn (): Booking => (new BookSlot)($slot->fresh(), $member, $member, new BookingOptions(guardHostOverlap: true)))
+        ->toThrow(HostOverlap::class)
+        ->and(Booking::active()->count())->toBe(1);
+});

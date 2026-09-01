@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Actions\BookSlot;
 use RobinsonRyan\Dibs\Data\BookingOptions;
 use RobinsonRyan\Dibs\Enums\BookingStatus;
@@ -223,7 +224,7 @@ it('returns the consumer’s extended booking model (R35)', function (): void {
     expect((new BookSlot)($slot, $alice, $alice))->toBeInstanceOf(BookSlotTestBooking::class);
 });
 
-it('books a slot whose in-memory copy is stale about its status', function (): void {
+it('refuses a slot whose in-memory copy is stale about its status', function (): void {
     $slot = Slot::factory()->create();
     $alice = user('Alice');
 
@@ -232,4 +233,42 @@ it('books a slot whose in-memory copy is stale about its status', function (): v
 
     expect(fn (): Booking => (new BookSlot)($slot, $alice, $alice))
         ->toThrow(SlotUnavailable::class);
+});
+
+it('counts the live claims on the locked row, not the slot’s cached status (B13)', function (): void {
+    // What a lowered capacity leaves behind: a claim on the row while the slot
+    // column still reads open. Capacity is an account of the bookings, not of
+    // that column.
+    $slot = Slot::factory()->create();
+    Booking::factory()->for($slot, 'slot')->bookedFor(user('Alice'))->create();
+
+    expect($slot->fresh()->status)->toBe(SlotStatus::Open)
+        ->and(fn (): Booking => (new BookSlot)($slot->fresh(), user('Bob'), user('Bob')))
+        ->toThrow(SlotUnavailable::class);
+
+    expect(Booking::active()->count())->toBe(1);
+});
+
+it('leaves the caller’s transaction usable after refusing a duplicate live claim', function (): void {
+    $slot = Slot::factory()->capacity(2)->create();
+    $alice = user('Alice');
+    $book = new BookSlot;
+
+    // claim() runs inside the caller's transaction by design, so the unique
+    // index has to fire inside a savepoint of its own — otherwise Postgres
+    // aborts this whole transaction and the next statement fails with 25P02.
+    DB::transaction(function () use ($book, $slot, $alice): void {
+        $book->claim($slot->fresh(), $alice, $alice, new BookingOptions);
+
+        try {
+            $book->claim($slot->fresh(), $alice, $alice, new BookingOptions);
+            $this->fail('Expected the duplicate live claim to be refused.');
+        } catch (SlotUnavailable) {
+            // Refused, and the transaction is still open for business.
+        }
+
+        expect(Booking::active()->count())->toBe(1);
+    });
+
+    expect(Booking::active()->count())->toBe(1);
 });
