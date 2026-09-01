@@ -1,6 +1,6 @@
 # Dibs — headless booking engine (package spec, v1)
 
-**Package:** `robinsonryan/dibs` · **Namespace:** `RobinsonRyan\Dibs` · **Status:** v1 built on `feature/v1` (2026-09-01), untagged
+**Package:** `robinsonryan/dibs` · **Namespace:** `RobinsonRyan\Dibs` · **Status:** v1 released as 0.1.0 / 0.1.1 (2026-09-01); work continues on `develop`
 **First consumer:** ccstake (bishopric interviews, tithing settlement, calling-extension meetings). The
 ccstake integration gets its **own spec in the ccstake repo**; §10 here is informative only.
 
