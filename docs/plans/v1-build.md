@@ -27,6 +27,9 @@ Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here)
 | B19 | `CompleteBooking` / `MarkNoShow` leave the slot `booked` (release belongs to cancellation only, §5.2); a completed slot is in the past and never re-bookable anyway. | Spec assigns slot release to CancelBooking only. |
 | B20 | `CreateDirectBooking` creates the adhoc slot `open` and lets the shared settle step flip it to `booked` — identical at capacity 1, correct above it. | One code path (D4). |
 | B21 | A pool row whose host record no longer resolves is skipped by auto-assign rather than assigned or thrown on. | Consumer deleted a host; booking must still succeed. |
+| B22 | A slot/offer row that vanished between the caller's copy and the lock is reported as `SlotNotOfferable` / `OfferNotAcceptable` ("no longer exists"); `WithdrawOffer` on a vanished offer throws `InvalidTransition` from the in-memory status. | No new exception types for a corner case. |
+| B23 | Adhoc offer specs are not checked for a future start at creation; `BookSlot` refuses a past slot at acceptance. | One gate, not two divergent ones. |
+| B24 | `CreateOffer` clamps the token length to `max(40, config('dibs.token_length'))`. | A misconfigured consumer cannot weaken the only lookup key. |
 | B13 | Concurrency-safe slot fullness: BookSlot counts active bookings under the row lock rather than trusting `status`. | `status` is a derived cache; the lock + count is the truth. |
 
 ## Module ownership (disjoint)

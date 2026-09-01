@@ -32,3 +32,10 @@ Behavior changes land here in the commit that makes them, not at tag time.
 - `OverlapCheck::for()` — a host's overlapping active bookings, as public API;
   `HostAssignment` data object for supplying hosts to a direct booking;
   `ReleaseSlot` — the origin rule (availability-born → open, unbooked adhoc → deleted).
+- Offer actions: `CreateOffer` (hold existing open capacity-1 slots and/or
+  create adhoc ones as held, behind a unique token of at least 40 characters;
+  all-or-nothing), `AcceptOffer` (book the invitee's chosen slot on the offer
+  path — a since-closed availability and the notice/horizon window are waived —
+  and release the losers per the origin rule), `WithdrawOffer`, and the
+  idempotent `ExpireOffers` sweep for a consumer's scheduler (one
+  `OfferExpired` per offer, each in its own transaction).

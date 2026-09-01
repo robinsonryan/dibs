@@ -244,16 +244,16 @@ per the `verification` skill before any "done" claim.
 | R21 | Booking `type` defaults from the availability at creation and survives later availability edits (D13) | `BookSlot` denormalises `type` at creation | `BookSlotTest` type survives availability edit | Done |
 | R22 | CancelBooking stamps `cancelled_at`/`cancelled_by`; future availability-born slot reverts toward `open`; adhoc slot survives (has a booking) but never appears bookable | `Actions\CancelBooking` + `Support\ReleaseSlot` (D3) | `CancelBookingTest`, `ReleaseSlotTest` | Done |
 | R23 | Booking status machine: booked→completed/cancelled/no_show; completed↔no_show allowed; cancelled terminal; others throw | `Actions\CompleteBooking`, `Actions\MarkNoShow` via `BookingStatus::canTransitionTo` | `tests/Feature/Booking/BookingOutcomeTest.php` | Done |
-| R24 | CreateOffer holds existing open capacity-1 slots and creates adhoc specs as held; mixing both in one offer works | | | Not started |
-| R25 | CreateOffer refuses capacity>1 slots (D12) | | | Not started |
-| R26 | Offer token is unique, ≥ 40 chars, and the only handle needed to fetch a pending offer | | | Not started |
-| R27 | AcceptOffer books the chosen slot, releases losers per D3 (availability-born → open, adhoc unbooked → deleted), sets accepted + accepted_booking_id | | | Not started |
-| R28 | AcceptOffer works on a closed availability and ignores notice/horizon (D11), but refuses expired/withdrawn/accepted offers and slots outside the offer | | | Not started |
-| R29 | AcceptOffer refuses a pending offer past `expires_at` even if no sweep has run | | | Not started |
-| R30 | WithdrawOffer releases all slots per D3 | | | Not started |
-| R31 | ExpireOffers sweeps all overdue pending offers, releases slots, fires one `OfferExpired` each; idempotent | | | Not started |
+| R24 | CreateOffer holds existing open capacity-1 slots and creates adhoc specs as held; mixing both in one offer works | `Actions\CreateOffer` (existing slots locked → held; adhoc specs created held) | `tests/Feature/Offer/CreateOfferTest.php`, mixed-offer cases in `AcceptOfferTest` | Done |
+| R25 | CreateOffer refuses capacity>1 slots (D12) | `CreateOffer` → `SlotNotOfferable` for capacity > 1 | `CreateOfferTest` | Done |
+| R26 | Offer token is unique, ≥ 40 chars, and the only handle needed to fetch a pending offer | `CreateOffer` token `Str::random(max(40, token_length))`, unique column | `CreateOfferTest` token cases | Done |
+| R27 | AcceptOffer books the chosen slot, releases losers per D3 (availability-born → open, adhoc unbooked → deleted), sets accepted + accepted_booking_id | `Actions\AcceptOffer` (BookSlot viaOffer + `ReleaseSlot` losers) | `AcceptOfferTest` | Done |
+| R28 | AcceptOffer works on a closed availability and ignores notice/horizon (D11), but refuses expired/withdrawn/accepted offers and slots outside the offer | `AcceptOffer` refusals; `BookingOptions::viaOffer` relaxations in `BookSlot` | `AcceptOfferTest` | Done |
+| R29 | AcceptOffer refuses a pending offer past `expires_at` even if no sweep has run | `AcceptOffer` checks `Offer::isExpired()` under the lock | `AcceptOfferTest` clock-expiry case | Done |
+| R30 | WithdrawOffer releases all slots per D3 | `Actions\WithdrawOffer` | `tests/Feature/Offer/WithdrawOfferTest.php` | Done |
+| R31 | ExpireOffers sweeps all overdue pending offers, releases slots, fires one `OfferExpired` each; idempotent | `Actions\ExpireOffers` (per-offer transaction, status re-checked under lock) | `tests/Feature/Offer/ExpireOffersTest.php` | Done |
 | R32 | Held slots never appear in `bookable` scope | `Slot::scopeBookable` (status = open) | `tests/Feature/Foundation/ScopesTest.php` "excludes held and booked" | Done |
-| R33 | The ten §6 events fire after commit, each carrying its loaded model(s) | | | Not started |
+| R33 | The ten §6 events fire after commit, each carrying its loaded model(s) | every action: `DB::afterCommit(fn () => event(...))` inside `DB::transaction`, models loaded first | `tests/Feature/{Availability,Booking,Offer}/*EventsTest.php` / per-action event tests (transactionLevel === 1 + relationLoaded) | Done |
 | R34 | All §5.4 scopes behave as specified (incl. notice/horizon math inside `bookable`) | scopes on `Availability`, `Slot`, `Booking`, `Offer` | `ScopesTest` (11 cases incl. notice/horizon math) | Done |
 | R35 | Config `models` map substitutes extended models throughout the package's own queries | `Support\Dibs::model/make/query`; relationships + factory `modelName()` resolve through it | `tests/Feature/Foundation/ModelResolverTest.php` | Done |
 | R36 | Package stores/compares UTC instants only; no timezone conversion anywhere in package code (D10) | | | Not started |
