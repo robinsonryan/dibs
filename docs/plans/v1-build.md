@@ -38,6 +38,7 @@ Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here)
 | B30 | Connection-pinning defect (QUEUE) fixed in the same follow-up: the two availability actions query slots via `Dibs::query(Slot::class)`. | Ryan chose fix-now. |
 | B31 | A spent-history open slot is retired **only when displaced** — no position of the new grid is identical to it; an identical position keeps the slot as-is (it *is* the grid slot). Re-submitting the same geometry changes nothing. | §2 says "displaced by a grid regeneration"; without this, identical edits duplicate slots (follow-up review). |
 | B32 | Regeneration locks every slot row of the availability `FOR UPDATE` before deleting/retiring, so a concurrent BookSlot serialises behind it (READ COMMITTED re-checks the row but not the `NOT EXISTS` subquery). | Follow-up review BLOCKER, reproduced. |
+| B33 | Identity preservation on regeneration applies to **every** open slot that exactly matches a new-grid position (not only spent-history ones): it keeps its row/id/status; a consumer-edited capacity survives an unchanged position. Resubmitting the same geometry writes nothing. | Remediator's generalisation of B31; accepted — fewer churned rows, no behaviour a consumer would miss. |
 | B13 | Concurrency-safe slot fullness: BookSlot counts active bookings under the row lock rather than trusting `status`. | `status` is a derived cache; the lock + count is the truth. |
 
 ## Module ownership (disjoint)
@@ -67,7 +68,7 @@ Worktrees: `.claude/worktrees/<mod>` on branches `feature/<mod>`; test DB per tr
 ## Status (2026-09-01)
 
 All four waves complete. Final gate on `feature/v1`: Pint 109 files, PHPStan L8 zero-ignore, Rector clean,
-Pest **253 passed / 701 assertions** after the 2026-09-01 follow-up (context, retired, connection fix). Every review finding fixed
+Pest **256 passed / 724 assertions** after the 2026-09-01 follow-up and its remediation (context, retired, connection fix, regeneration lock). Every review finding fixed
 with a mutation-verified test (`docs/plans/reviews/*.md`). Worktrees and `testing_wt_*` databases torn down.
 
 ## Review findings

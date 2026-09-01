@@ -68,7 +68,17 @@ Behavior changes land here in the commit that makes them, not at tag time.
   and both it and `UpdateAvailabilityGeometry` issue every slot statement on the
   transaction's connection even when handed a model pinned to another one.
 
+### Fixed
+
+- A geometry edit racing a booking could retire a slot that had just been
+  claimed and lay a duplicate open slot on its position; regeneration now locks
+  the availability's slots before changing any of them.
+
 ### Changed
+
+- Regeneration only retires slots the new grid actually displaces: an open slot
+  that exactly matches a generated position keeps its row, id and status, so
+  resubmitting an unchanged geometry is a no-op.
 
 - `PublishAvailability`, `CloseAvailability`, `UpdateAvailabilityGeometry`,
   `CancelBooking`, `CompleteBooking` and `MarkNoShow` return the freshly
