@@ -67,18 +67,21 @@ final class UpdateAvailabilityGeometry
             ->whereDoesntHave('bookings')
             ->delete();
 
-        // Whatever is still open carries booking history, which is never deleted
-        // (D3). It steps aside as `retired`: out of every listing, but its row —
-        // and its bookings — stand (R41).
+        // What is still open carries booking history, which is never deleted
+        // (D3). Where that history is spent — cancelled, completed, no-show —
+        // the slot steps aside as `retired`: out of every listing, but its row
+        // and its bookings stand (R41). An open slot still holding a live claim
+        // (a partly-full capacity-N slot) is not history, and is left alone.
         $this->slots($availability)
             ->open()
+            ->whereDoesntHave('activeBookings')
             ->update(['status' => SlotStatus::Retired->value]);
 
-        // Held and booked slots are never disturbed and still hold their
-        // positions, even when they now fall outside the window (D6). A retired
-        // slot is history, not an obstacle: its position is free to be reused.
+        // Everything left standing holds its position, even when it now falls
+        // outside the window (D6): held, booked, and the open slots with live
+        // claims. Only a retired slot steps aside, and its position is reused.
         $survivors = $this->slots($availability)
-            ->whereIn('status', [SlotStatus::Held->value, SlotStatus::Booked->value])
+            ->where(Dibs::make(Slot::class)->qualifyColumn('status'), '!=', SlotStatus::Retired->value)
             ->get();
 
         foreach ($positions as $position) {
