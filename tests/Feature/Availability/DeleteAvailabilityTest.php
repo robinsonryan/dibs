@@ -96,3 +96,16 @@ it('refuses with a dibs exception consumers can catch', function (): void {
 
     expect(fn () => (new DeleteAvailability)($availability))->toThrow(DibsException::class);
 });
+
+it('refuses while a slot is retired, because a retired slot still carries bookings (R41)', function (): void {
+    $availability = deletePublished();
+    $slot = $availability->slots()->orderBy('starts_at')->firstOrFail();
+    Booking::factory()->for($slot, 'slot')->bookedFor(user())->cancelled()->create();
+    $slot->update(['status' => SlotStatus::Retired]);
+
+    expect(fn () => (new DeleteAvailability)($availability))->toThrow(DeletionRefused::class);
+
+    expect(Availability::query()->count())->toBe(1)
+        ->and($slot->fresh()?->status)->toBe(SlotStatus::Retired)
+        ->and($availability->slots()->count())->toBe(4);
+});

@@ -25,6 +25,12 @@ final class ReleaseSlot
             return;
         }
 
+        // A slot displaced by a regeneration is history: it keeps its bookings
+        // and never returns to circulation (R41).
+        if ($locked->status === SlotStatus::Retired) {
+            return;
+        }
+
         if ($locked->isAdhoc() && $locked->bookings()->count() === 0) {
             $locked->delete();
 

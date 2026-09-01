@@ -41,7 +41,7 @@ final class AcceptOffer
                 throw OfferNotAcceptable::for($locked, 'it has expired');
             }
 
-            $locked->load(['slots', 'offeredTo']);
+            $locked->load(['slots', 'offeredTo', 'context']);
 
             $chosen = $locked->slots->first(
                 fn (Slot $slot): bool => $slot->getKey() === $chosenSlot->getKey(),
@@ -59,7 +59,12 @@ final class AcceptOffer
 
             // An outstanding offer is a promise: the offer path relaxes the
             // closed availability and the notice/horizon window (D11).
-            $booking = (new BookSlot)($chosen, $invitee, $bookedBy ?? $invitee, new BookingOptions(viaOffer: true));
+            // The offer's own scope wins; an offer without one leaves BookSlot
+            // to inherit the availability's.
+            $booking = (new BookSlot)($chosen, $invitee, $bookedBy ?? $invitee, new BookingOptions(
+                viaOffer: true,
+                context: $locked->context,
+            ));
 
             foreach ($locked->slots as $slot) {
                 if ($slot->getKey() !== $chosen->getKey()) {

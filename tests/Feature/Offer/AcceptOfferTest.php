@@ -194,3 +194,30 @@ it('refuses a slot that has since been booked by someone else', function (): voi
     expect(fn (): Booking => (new AcceptOffer)($offer, $slot))->toThrow(SlotUnavailable::class)
         ->and($offer->refresh()->status)->toBe(OfferStatus::Pending);
 });
+
+it('carries the offer’s context onto the booking it creates (R40)', function (): void {
+    $ward = organization('Oak Hills');
+    $invitee = user('Invitee');
+    $chosen = Slot::factory()->create();
+
+    $offer = (new CreateOffer)($invitee, [$chosen], null, null, null, [], $ward);
+
+    $booking = (new AcceptOffer)($offer, $chosen);
+
+    expect($booking->context_type)->toBe('organization')
+        ->and($booking->context_id)->toBe((string) $ward->getKey())
+        ->and(Booking::forContext($ward)->pluck('id')->all())->toBe([$booking->id]);
+});
+
+it('falls back to the availability’s context when the offer carries none', function (): void {
+    $ward = organization('Oak Hills');
+    $availability = Availability::factory()->published()->forContext($ward)->create();
+    $chosen = Slot::factory()->for($availability)->create();
+
+    $offer = (new CreateOffer)(user('Invitee'), [$chosen]);
+
+    $booking = (new AcceptOffer)($offer, $chosen);
+
+    expect($booking->context_id)->toBe((string) $ward->getKey())
+        ->and($offer->fresh()?->context_id)->toBeNull();
+});

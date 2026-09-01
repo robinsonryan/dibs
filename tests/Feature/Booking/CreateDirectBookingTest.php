@@ -185,3 +185,23 @@ it('keeps one person in two roles as two assignments', function (): void {
 
     expect($booking->hosts()->orderBy('role')->pluck('role')->all())->toBe(['interviewer', 'scribe']);
 });
+
+it('stamps a supplied context on a direct booking (R40)', function (): void {
+    $ward = organization('Oak Hills');
+    $member = user('Member');
+
+    $booking = (new CreateDirectBooking)($member, $member, directSpec(), [], new BookingOptions(context: $ward));
+
+    expect($booking->context_type)->toBe('organization')
+        ->and($booking->context_id)->toBe((string) $ward->getKey())
+        ->and(Booking::forContext($ward)->pluck('id')->all())->toBe([$booking->id]);
+});
+
+it('leaves a direct booking without a context when none is supplied', function (): void {
+    $member = user('Member');
+
+    $booking = (new CreateDirectBooking)($member, $member, directSpec());
+
+    expect($booking->context_type)->toBeNull()
+        ->and($booking->context_id)->toBeNull();
+});

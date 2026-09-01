@@ -241,6 +241,13 @@ final class BookSlot
             // caught SlotUnavailable can be followed by more work.
             return DB::transaction(fn (): Booking => Dibs::query(Booking::class)->create([
                 'slot_id' => $slot->getKey(),
+                // The owning scope, denormalised like `type` below: supplied by
+                // the caller, else inherited from the availability the slot was
+                // born of (an adhoc slot has none to inherit).
+                'context_type' => $options->context?->getMorphClass() ?? $availability?->context_type,
+                'context_id' => $options->context instanceof Model
+                    ? (string) $options->context->getKey()
+                    : $availability?->context_id,
                 'booked_for_type' => $bookedFor->getMorphClass(),
                 'booked_for_id' => (string) $bookedFor->getKey(),
                 'booked_by_type' => $bookedBy->getMorphClass(),

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace RobinsonRyan\Dibs\Actions;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
@@ -60,21 +61,36 @@ final class UpdateAvailabilityGeometry
      */
     private function regenerate(Availability $availability, array $positions): void
     {
-        // Held, booked, and open-with-history slots are never disturbed, even
-        // when they now fall outside the window (D6).
-        $availability->slots()
+        // An open slot no booking ever touched is simply replaced by the new grid.
+        $this->slots($availability)
             ->open()
             ->whereDoesntHave('bookings')
             ->delete();
 
-        $survivors = $availability->slots()->get();
+        // What is still open carries booking history, which is never deleted
+        // (D3). Where that history is spent — cancelled, completed, no-show —
+        // the slot steps aside as `retired`: out of every listing, but its row
+        // and its bookings stand (R41). An open slot still holding a live claim
+        // (a partly-full capacity-N slot) is not history, and is left alone.
+        $this->slots($availability)
+            ->open()
+            ->whereDoesntHave('activeBookings')
+            ->update(['status' => SlotStatus::Retired->value]);
+
+        // Everything left standing holds its position, even when it now falls
+        // outside the window (D6): held, booked, and the open slots with live
+        // claims. Only a retired slot steps aside, and its position is reused.
+        $survivors = $this->slots($availability)
+            ->where(Dibs::make(Slot::class)->qualifyColumn('status'), '!=', SlotStatus::Retired->value)
+            ->get();
 
         foreach ($positions as $position) {
             if ($this->overlapsSurvivor($survivors, $position)) {
                 continue;
             }
 
-            $availability->slots()->create([
+            Dibs::query(Slot::class)->create([
+                'availability_id' => $availability->getKey(),
                 'starts_at' => $position['starts_at'],
                 'ends_at' => $position['ends_at'],
                 'location' => null,
@@ -82,6 +98,19 @@ final class UpdateAvailabilityGeometry
                 'status' => SlotStatus::Open,
             ]);
         }
+    }
+
+    /**
+     * This availability's slots, reached through the class-map rather than the
+     * relation, so the read, the lock and the write all run on the connection
+     * the transaction opened on — never on whatever connection hydrated the
+     * model the caller handed in (R42).
+     *
+     * @return Builder<Slot>
+     */
+    private function slots(Availability $availability): Builder
+    {
+        return Dibs::query(Slot::class)->where('availability_id', $availability->getKey());
     }
 
     /**

@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Event;
+use RobinsonRyan\Dibs\Actions\BookSlot;
 use RobinsonRyan\Dibs\Actions\PublishAvailability;
 use RobinsonRyan\Dibs\Actions\UpdateAvailabilityGeometry;
 use RobinsonRyan\Dibs\Data\AvailabilityGeometry;
@@ -12,6 +13,7 @@ use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Events\AvailabilityClosed;
 use RobinsonRyan\Dibs\Events\AvailabilityPublished;
 use RobinsonRyan\Dibs\Exceptions\InvalidGeometry;
+use RobinsonRyan\Dibs\Exceptions\SlotUnavailable;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\Slot;
@@ -45,7 +47,9 @@ function geometryPublished(): Availability
  */
 function geometrySlots(Availability $availability): Collection
 {
-    return $availability->slots()->orderBy('starts_at')->get();
+    // A retired slot and the fresh slot that reuses its position share a
+    // starts_at, so status breaks the tie and the listing stays deterministic.
+    return $availability->slots()->orderBy('starts_at')->orderBy('status')->get();
 }
 
 /**
@@ -146,7 +150,7 @@ it('never touches a held or booked slot, even outside the new window', function 
         ->and($booked?->updated_at?->toIso8601String())->toBe($bookedBefore?->updated_at?->toIso8601String());
 });
 
-it('keeps an open slot that carries a cancelled booking', function (): void {
+it('retires an open slot that carries a cancelled booking rather than deleting it (R41)', function (): void {
     $availability = geometryPublished();
     $slots = geometrySlots($availability);
     Booking::factory()->for($slots[1], 'slot')->bookedFor(user())->cancelled()->create();
@@ -158,8 +162,84 @@ it('keeps an open slot that carries a cancelled booking', function (): void {
     ));
 
     expect($slots[1]->fresh())->not->toBeNull()
+        ->and($slots[1]->fresh()?->status)->toBe(SlotStatus::Retired)
         ->and($slots[0]->fresh())->toBeNull()
-        ->and(geometryWindows($availability))->toBe(['09:30-10:00 open', '12:00-13:00 open']);
+        ->and(geometryWindows($availability))->toBe(['09:30-10:00 retired', '12:00-13:00 open']);
+});
+
+it('keeps a retired slot’s bookings and its place on the calendar (R41)', function (): void {
+    $availability = geometryPublished();
+    $slots = geometrySlots($availability);
+    $booking = Booking::factory()->for($slots[1], 'slot')->bookedFor(user())->cancelled()->create();
+    $before = $slots[1]->fresh();
+
+    (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
+        geometryAt('2026-03-08 12:00'),
+        geometryAt('2026-03-08 13:00'),
+        60,
+    ));
+
+    $retired = $slots[1]->fresh();
+
+    expect($retired?->status)->toBe(SlotStatus::Retired)
+        ->and($retired?->starts_at->toIso8601String())->toBe($before?->starts_at->toIso8601String())
+        ->and($retired?->ends_at->toIso8601String())->toBe($before?->ends_at->toIso8601String())
+        ->and($retired?->created_at?->toIso8601String())->toBe($before?->created_at?->toIso8601String())
+        ->and($retired?->bookings()->pluck('id')->all())->toBe([$booking->id]);
+});
+
+it('leaves a retired slot out of every listing but the retired one (R41)', function (): void {
+    $availability = geometryPublished();
+    $slots = geometrySlots($availability);
+    Booking::factory()->for($slots[1], 'slot')->bookedFor(user())->cancelled()->create();
+
+    (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
+        geometryAt('2026-03-08 12:00'),
+        geometryAt('2026-03-08 13:00'),
+        60,
+    ));
+
+    expect(Slot::query()->retired()->pluck('id')->all())->toBe([$slots[1]->id])
+        ->and(Slot::query()->bookable()->pluck('id')->all())->not->toContain($slots[1]->id)
+        ->and(Slot::query()->upcoming()->pluck('id')->all())->not->toContain($slots[1]->id);
+});
+
+it('refuses to book a retired slot (R41)', function (): void {
+    $availability = geometryPublished();
+    $slots = geometrySlots($availability);
+    Booking::factory()->for($slots[1], 'slot')->bookedFor(user())->cancelled()->create();
+
+    (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
+        geometryAt('2026-03-08 12:00'),
+        geometryAt('2026-03-08 13:00'),
+        60,
+    ));
+
+    $retired = $slots[1]->fresh();
+
+    expect(fn (): Booking => (new BookSlot)($retired, user('Alice'), user('Alice')))
+        ->toThrow(SlotUnavailable::class);
+});
+
+it('leaves an already retired slot retired on a second regeneration (R41)', function (): void {
+    $availability = geometryPublished();
+    $slots = geometrySlots($availability);
+    Booking::factory()->for($slots[1], 'slot')->bookedFor(user())->cancelled()->create();
+
+    (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
+        geometryAt('2026-03-08 12:00'),
+        geometryAt('2026-03-08 13:00'),
+        60,
+    ));
+
+    (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
+        geometryAt('2026-03-08 14:00'),
+        geometryAt('2026-03-08 15:00'),
+        60,
+    ));
+
+    expect($slots[1]->fresh()?->status)->toBe(SlotStatus::Retired)
+        ->and(geometryWindows($availability))->toBe(['09:30-10:00 retired', '14:00-15:00 open']);
 });
 
 it('skips generated positions that overlap a surviving slot', function (): void {
@@ -178,14 +258,18 @@ it('skips generated positions that overlap a surviving slot', function (): void 
 
     $regenerated = geometrySlots($availability);
 
+    // The retired slot no longer blocks its position, so the grid lays a fresh
+    // open slot over it; the held and booked ones still stand their positions.
     expect(geometryWindows($availability))->toBe([
         '09:00-09:30 open',
         '09:30-10:00 open',
+        '09:30-10:00 retired',
         '10:00-10:30 held',
         '10:30-11:00 booked',
     ])
         ->and($regenerated[0]->id)->not->toBe($slots[0]->id)
-        ->and($regenerated[1]->id)->toBe($slots[1]->id);
+        ->and($regenerated[1]->id)->not->toBe($slots[1]->id)
+        ->and($regenerated[2]->id)->toBe($slots[1]->id);
 });
 
 it('regenerates around a surviving slot that only partially overlaps a position', function (): void {
@@ -232,4 +316,58 @@ it('fires no availability event', function (): void {
 
     Event::assertNotDispatched(AvailabilityPublished::class);
     Event::assertNotDispatched(AvailabilityClosed::class);
+});
+
+it('never touches an open slot that still holds a live booking, and lets it keep its position (D6)', function (): void {
+    $availability = geometryPublished();
+    $slots = geometrySlots($availability);
+    $slots[1]->update(['capacity' => 3]);
+    Booking::factory()->for($slots[1], 'slot')->bookedFor(user())->create();
+    Booking::factory()->for($slots[1], 'slot')->bookedFor(user())->cancelled()->create();
+
+    $before = $slots[1]->fresh();
+
+    // Move the clock on, so an accidental touch would stamp a different
+    // updated_at and the assertion below can actually fail.
+    CarbonImmutable::setTestNow(CarbonImmutable::now()->addMinute());
+
+    (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
+        geometryAt('2026-03-08 09:00'),
+        geometryAt('2026-03-08 10:00'),
+        30,
+    ));
+
+    $live = $slots[1]->fresh();
+    $regenerated = geometrySlots($availability);
+
+    expect($live?->status)->toBe(SlotStatus::Open)
+        ->and($live?->capacity)->toBe(3)
+        ->and($live?->starts_at->toIso8601String())->toBe($before?->starts_at->toIso8601String())
+        ->and($live?->ends_at->toIso8601String())->toBe($before?->ends_at->toIso8601String())
+        ->and($live?->updated_at?->toIso8601String())->toBe($before?->updated_at?->toIso8601String())
+        ->and(Slot::query()->upcoming()->pluck('id')->all())->toContain($slots[1]->id)
+        // Its position is its own: the grid lays nothing over it.
+        ->and($regenerated)->toHaveCount(2)
+        ->and($regenerated[1]->id)->toBe($slots[1]->id)
+        ->and(geometryWindows($availability))->toBe(['09:00-09:30 open', '09:30-10:00 open']);
+});
+
+it('retires an open slot whose every booking is history, however much capacity it had (R41)', function (): void {
+    $availability = geometryPublished();
+    $slots = geometrySlots($availability);
+    $slots[1]->update(['capacity' => 3]);
+    Booking::factory()->for($slots[1], 'slot')->bookedFor(user())->cancelled()->create();
+
+    (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
+        geometryAt('2026-03-08 09:00'),
+        geometryAt('2026-03-08 10:00'),
+        30,
+    ));
+
+    expect($slots[1]->fresh()?->status)->toBe(SlotStatus::Retired)
+        ->and(geometryWindows($availability))->toBe([
+            '09:00-09:30 open',
+            '09:30-10:00 open',
+            '09:30-10:00 retired',
+        ]);
 });
