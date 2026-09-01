@@ -209,6 +209,23 @@ it('carries the offer’s context onto the booking it creates (R40)', function (
         ->and(Booking::forContext($ward)->pluck('id')->all())->toBe([$booking->id]);
 });
 
+it('keeps the offer’s stored context even when that tenant row is gone', function (): void {
+    $ward = organization('Oak Hills');
+    $other = organization('Riverside');
+    $availability = Availability::factory()->published()->forContext($other)->create();
+    $chosen = Slot::factory()->for($availability)->create();
+    $offer = (new CreateOffer)(user('Invitee'), [$chosen], context: $ward);
+    $wardId = (string) $ward->getKey();
+
+    $ward->delete();
+
+    $booking = (new AcceptOffer)($offer, $chosen);
+
+    expect($booking->context_type)->toBe('organization')
+        ->and($booking->context_id)->toBe($wardId)
+        ->and($booking->context_id)->not->toBe((string) $other->getKey());
+});
+
 it('falls back to the availability’s context when the offer carries none', function (): void {
     $ward = organization('Oak Hills');
     $availability = Availability::factory()->published()->forContext($ward)->create();

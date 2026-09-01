@@ -41,7 +41,7 @@ final class AcceptOffer
                 throw OfferNotAcceptable::for($locked, 'it has expired');
             }
 
-            $locked->load(['slots', 'offeredTo', 'context']);
+            $locked->load(['slots', 'offeredTo']);
 
             $chosen = $locked->slots->first(
                 fn (Slot $slot): bool => $slot->getKey() === $chosenSlot->getKey(),
@@ -63,7 +63,8 @@ final class AcceptOffer
             // to inherit the availability's.
             $booking = (new BookSlot)($chosen, $invitee, $bookedBy ?? $invitee, new BookingOptions(
                 viaOffer: true,
-                context: $locked->context,
+                contextType: $locked->context_type,
+                contextId: $locked->context_id,
             ));
 
             foreach ($locked->slots as $slot) {

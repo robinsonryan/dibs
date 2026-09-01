@@ -235,6 +235,8 @@ final class BookSlot
 
     private function write(Slot $slot, Model $bookedFor, Model $bookedBy, BookingOptions $options, ?Availability $availability): Booking
     {
+        [$contextType, $contextId] = $options->contextPair();
+
         try {
             // A savepoint of its own: when the unique index rejects the insert,
             // rolling back to here leaves the caller's transaction usable, so a
@@ -244,10 +246,8 @@ final class BookSlot
                 // The owning scope, denormalised like `type` below: supplied by
                 // the caller, else inherited from the availability the slot was
                 // born of (an adhoc slot has none to inherit).
-                'context_type' => $options->context?->getMorphClass() ?? $availability?->context_type,
-                'context_id' => $options->context instanceof Model
-                    ? (string) $options->context->getKey()
-                    : $availability?->context_id,
+                'context_type' => $contextType ?? $availability?->context_type,
+                'context_id' => $contextId ?? $availability?->context_id,
                 'booked_for_type' => $bookedFor->getMorphClass(),
                 'booked_for_id' => (string) $bookedFor->getKey(),
                 'booked_by_type' => $bookedBy->getMorphClass(),

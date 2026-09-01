@@ -7,6 +7,20 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-01
+
+### Fixed
+
+- `AcceptOffer` stamped the booking's context from the offer's tenant *model*;
+  if that row had been deleted while the offer was pending, the booking silently
+  inherited the availability's context (or none). The offer's stored
+  `context_type`/`context_id` pair is now passed through verbatim.
+
+### Added
+
+- `BookingOptions` accepts an already-stored scope as `contextType`/`contextId`
+  (takes precedence over the `context` model); `BookingOptions::contextPair()`.
+
 ## [0.1.0] - 2026-09-01
 
 First release: the v1 spec (`docs/SPEC.md`) built requirement-by-requirement.
