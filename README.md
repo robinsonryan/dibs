@@ -48,11 +48,17 @@ There is deliberately no timezone, permission or notification configuration.
 | Concept | Model | States |
 |---|---|---|
 | A published window of bookable time | `Availability` | `draft` → `published` ⇄ `closed` |
-| One bookable time | `Slot` | `open`, `held`, `booked` (= full) |
+| One bookable time | `Slot` | `open`, `held`, `booked` (= full), `retired` (history only) |
 | The claim on a slot | `Booking` | `booked` → `completed` ⇄ `no_show`, or → `cancelled` (terminal) |
 | A tokenized multi-slot invitation | `Offer` | `pending` → `accepted` / `expired` / `withdrawn` |
 | Who fulfils a booking | any of your models, attached as a **host** with a `role` | pool on the availability, assignment on the booking |
 | Who the booking is for / who submitted it | `bookedFor` / `bookedBy` (your models) | equal unless booked on someone's behalf |
+
+**Tenancy.** An availability belongs to an optional *context* (your tenant / organisation
+model). Every booking copies that context at creation — a direct booking takes it as an
+option — and every offer takes one at creation, so `Availability::forContext($ward)`,
+`Booking::forContext($ward)` and `Offer::forContext($ward)` answer "whose is this?" with
+one indexed column and no join. Enforcing who may *see* what is still yours.
 
 Buffers are availability parameters, not slot concepts: slot padding, minimum booking
 notice, maximum booking horizon. Slots are bare start/end rows. A slot's **origin** is
@@ -88,7 +94,8 @@ $availability->hosts()->create(['host_type' => $bishop->getMorphClass(), 'host_i
 (new PublishAvailability)($availability);     // reopen — generates nothing new
 
 (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry($start, $start->addHours(3), 20));
-// regenerates OPEN slots only; held/booked slots (and open ones with history) survive, even outside the new window
+// regenerates OPEN slots only; held/booked slots survive untouched, even outside the new window;
+// an open slot that carries a cancelled booking is retired (history kept, position reused)
 
 $next = (new DuplicateAvailability)($availability, $start->addWeek(), $start->addWeek()->addHours(2)); // "every Tuesday" is a duplicate, not a rule
 (new DeleteAvailability)($availability);      // throws DeletionRefused while any slot is held or has bookings
@@ -114,6 +121,7 @@ $booking = (new CreateDirectBooking)(
     $member, $clerk,
     new AdhocSlotSpec($start, $start->addMinutes(30), location: 'Bishop\'s office'),
     [new HostAssignment($bishop, 'interviewer')],
+    new BookingOptions(context: $ward),       // an adhoc slot has no availability to inherit a context from
 );                                            // adhoc slot + booking + assignment, one transaction
 
 (new CancelBooking)($booking, cancelledBy: $clerk); // releases the slot: availability-born → open again; adhoc → kept as history
@@ -137,6 +145,7 @@ $offer = (new CreateOffer)(
     expiresAt: now()->addDays(3)->toImmutable(),
     createdBy: $bishop,
     message: 'Pick whichever works.',
+    context: $ward,
 );                                            // holds the slots (they leave Slot::bookable()); fires OfferCreated
 
 $offer = Offer::pending()->where('token', $token)->firstOrFail();   // the token is the only handle a link needs
@@ -164,8 +173,9 @@ offer on its own, whether or not a sweep has run.
 
 `Availability::published()` · `Slot::bookable()` (open + published availability +
 future + notice/horizon satisfied) · `Slot::upcoming()` · `Booking::active()` ·
-`Booking::upcoming()` · `Offer::pending()` (pending **and** unexpired). Each time-based
-scope accepts an optional reference instant.
+`Booking::upcoming()` · `Offer::pending()` (pending **and** unexpired) · `Slot::retired()` ·
+`forContext($model)` on `Availability`, `Booking`, `Offer`. Each time-based scope accepts an
+optional reference instant.
 
 ### Events
 
