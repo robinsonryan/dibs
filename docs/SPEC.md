@@ -243,7 +243,7 @@ per the `verification` skill before any "done" claim.
 | R20 | CreateDirectBooking creates an adhoc slot + booking + assignments in one transaction | | | Not started |
 | R21 | Booking `type` defaults from the availability at creation and survives later availability edits (D13) | | | Not started |
 | R22 | CancelBooking stamps `cancelled_at`/`cancelled_by`; future availability-born slot reverts toward `open`; adhoc slot survives (has a booking) but never appears bookable | | | Not started |
-| R23 | Booking status machine: booked→completed/cancelled/no_show; completed↔no_show allowed; cancelled terminal; others throw | | | Not started |
+| R23 | Booking status machine: booked→completed/cancelled/no_show; completed↔no_show allowed; cancelled terminal; others throw | `Actions\CompleteBooking`, `Actions\MarkNoShow` via `BookingStatus::canTransitionTo` | `tests/Feature/Booking/BookingOutcomeTest.php` | Done |
 | R24 | CreateOffer holds existing open capacity-1 slots and creates adhoc specs as held; mixing both in one offer works | | | Not started |
 | R25 | CreateOffer refuses capacity>1 slots (D12) | | | Not started |
 | R26 | Offer token is unique, ≥ 40 chars, and the only handle needed to fetch a pending offer | | | Not started |
