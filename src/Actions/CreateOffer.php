@@ -29,12 +29,13 @@ final class CreateOffer
     /**
      * @param  iterable<int, Slot|AdhocSlotSpec>  $slots  existing open capacity-1 slots (→ held) and/or adhoc specs (created held)
      * @param  array<string, mixed>  $meta
+     * @param  Model|null  $context  the owning scope stamped on the offer, and on the booking accepting it
      */
-    public function __invoke(Model $offeredTo, iterable $slots, ?CarbonImmutable $expiresAt = null, ?Model $createdBy = null, ?string $message = null, array $meta = []): Offer
+    public function __invoke(Model $offeredTo, iterable $slots, ?CarbonImmutable $expiresAt = null, ?Model $createdBy = null, ?string $message = null, array $meta = [], ?Model $context = null): Offer
     {
         $this->assertExpiryIsAhead($expiresAt);
 
-        return DB::transaction(function () use ($offeredTo, $slots, $expiresAt, $createdBy, $message, $meta): Offer {
+        return DB::transaction(function () use ($offeredTo, $slots, $expiresAt, $createdBy, $message, $meta, $context): Offer {
             $held = $this->holdAll($slots);
 
             if ($held === []) {
@@ -43,6 +44,10 @@ final class CreateOffer
 
             $offer = Dibs::query(Offer::class)->create([
                 'token' => $this->token(),
+                // Supplied, never inherited: an all-adhoc offer has no
+                // availability to inherit a scope from.
+                'context_type' => $context?->getMorphClass(),
+                'context_id' => $context instanceof Model ? (string) $context->getKey() : null,
                 'offered_to_type' => $offeredTo->getMorphClass(),
                 'offered_to_id' => (string) $offeredTo->getKey(),
                 'created_by_type' => $createdBy?->getMorphClass(),

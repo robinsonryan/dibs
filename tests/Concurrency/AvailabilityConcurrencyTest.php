@@ -7,12 +7,15 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Actions\DeleteAvailability;
 use RobinsonRyan\Dibs\Actions\PublishAvailability;
+use RobinsonRyan\Dibs\Actions\UpdateAvailabilityGeometry;
+use RobinsonRyan\Dibs\Data\AvailabilityGeometry;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Exceptions\DeletionRefused;
 use RobinsonRyan\Dibs\Exceptions\InvalidTransition;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Slot;
+use RobinsonRyan\Dibs\Support\Dibs;
 
 afterEach(function (): void {
     DB::setDefaultConnection('testing');
@@ -137,7 +140,11 @@ it('waits for a rival hold before deciding a deletion, and refuses once it sees 
         expect((string) $blocked->getCode())->toBe('55P03');
     }
 
-    expect(availabilityStatements($b))->toBe([]);
+    // It got no further than locking the availability it was asked to delete:
+    // nothing was decided, nothing was written, nothing cascaded.
+    expect(availabilityStatements($b))->toHaveCount(1)
+        ->and(availabilityStatements($b)[0])->toContain('dibs_availabilities')
+        ->and(availabilityStatements($b)[0])->toContain('for update');
 
     $b->disableQueryLog();
 
@@ -155,4 +162,94 @@ it('waits for a rival hold before deciding a deletion, and refuses once it sees 
 
     expect(Availability::query()->count())->toBe(1)
         ->and($slot->fresh()?->status)->toBe(SlotStatus::Held);
+});
+
+/**
+ * A copy of the availability hydrated on the second connection — what a consumer
+ * hands in when its own request read the row through a connection of its own.
+ */
+function availabilityPinnedToB(Availability $availability): Availability
+{
+    $query = Dibs::make(Availability::class)->setConnection('testing_b')->newQuery();
+
+    /** @var Availability $pinned */
+    $pinned = $query->findOrFail($availability->getKey());
+
+    return $pinned;
+}
+
+function availabilityPublishedForHour(): Availability
+{
+    $start = now()->addWeek()->startOfHour()->toImmutable();
+
+    $availability = Availability::factory()
+        ->draft()
+        ->window($start, $start->addHour())
+        ->geometry(30)
+        ->create();
+
+    return (new PublishAvailability)($availability);
+}
+
+it('takes its slot lock on the transaction’s connection, not the one that hydrated the availability (R42)', function (): void {
+    $availability = availabilityPublishedForHour();
+    $slot = Slot::query()->where('availability_id', $availability->id)->orderBy('starts_at')->firstOrFail();
+    $pinned = availabilityPinnedToB($availability);
+
+    $a = DB::connection('testing');
+    $b = DB::connection('testing_b');
+
+    // Session B holds one of the slots. A lock, check or delete run on B's own
+    // connection would sail straight through this — only work done on the
+    // transaction's connection queues behind it.
+    $b->beginTransaction();
+    $b->select('select id from dibs_slots where id = ? for update', [$slot->id]);
+
+    $a->statement("set lock_timeout = '300ms'");
+
+    try {
+        (new DeleteAvailability)($pinned);
+        $this->fail('Expected the delete to block on the default connection, not run inside session B.');
+    } catch (QueryException $blocked) {
+        expect((string) $blocked->getCode())->toBe('55P03');
+    }
+
+    $a->statement('set lock_timeout = 0');
+    $b->rollBack();
+
+    // Nothing was decided or cascaded from the far side of the lock.
+    expect(Availability::query()->count())->toBe(1)
+        ->and(Slot::query()->count())->toBe(2);
+});
+
+it('regenerates a grid on the transaction’s connection when handed a pinned availability (R42)', function (): void {
+    $availability = availabilityPublishedForHour();
+    $slot = Slot::query()->where('availability_id', $availability->id)->orderBy('starts_at')->firstOrFail();
+    $pinned = availabilityPinnedToB($availability);
+
+    $a = DB::connection('testing');
+    $b = DB::connection('testing_b');
+
+    $b->beginTransaction();
+    $b->select('select id from dibs_slots where id = ? for update', [$slot->id]);
+
+    $a->statement("set lock_timeout = '300ms'");
+
+    try {
+        (new UpdateAvailabilityGeometry)($pinned, new AvailabilityGeometry(
+            $availability->starts_at,
+            $availability->ends_at,
+            60,
+        ));
+        $this->fail('Expected the regeneration to block on the default connection, not run inside session B.');
+    } catch (QueryException $blocked) {
+        expect((string) $blocked->getCode())->toBe('55P03');
+    }
+
+    $a->statement('set lock_timeout = 0');
+    $b->rollBack();
+
+    // The geometry write is inside the same transaction, so it rolled back too.
+    expect($availability->fresh()?->slot_duration_minutes)->toBe(30)
+        ->and(Slot::query()->count())->toBe(2);
 });

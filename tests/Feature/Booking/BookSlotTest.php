@@ -272,3 +272,39 @@ it('leaves the caller’s transaction usable after refusing a duplicate live cla
 
     expect(Booking::active()->count())->toBe(1);
 });
+
+it('stamps the availability’s context on the booking (R40)', function (): void {
+    $ward = organization('Oak Hills');
+    $availability = Availability::factory()->published()->forContext($ward)->create();
+    $slot = Slot::factory()->for($availability)->create();
+    $alice = user('Alice');
+
+    $booking = (new BookSlot)($slot, $alice, $alice);
+
+    expect($booking->context_type)->toBe('organization')
+        ->and($booking->context_id)->toBe((string) $ward->getKey())
+        ->and(Booking::forContext($ward)->pluck('id')->all())->toBe([$booking->id]);
+});
+
+it('prefers a supplied context over the availability’s', function (): void {
+    $oakHills = organization('Oak Hills');
+    $riverside = organization('Riverside');
+    $availability = Availability::factory()->published()->forContext($oakHills)->create();
+    $slot = Slot::factory()->for($availability)->create();
+    $alice = user('Alice');
+
+    $booking = (new BookSlot)($slot, $alice, $alice, new BookingOptions(context: $riverside));
+
+    expect($booking->context_id)->toBe((string) $riverside->getKey())
+        ->and(Booking::forContext($oakHills)->count())->toBe(0);
+});
+
+it('leaves the booking without a context when neither the options nor the availability carry one', function (): void {
+    $slot = Slot::factory()->create();
+    $alice = user('Alice');
+
+    $booking = (new BookSlot)($slot, $alice, $alice);
+
+    expect($booking->context_type)->toBeNull()
+        ->and($booking->context_id)->toBeNull();
+});

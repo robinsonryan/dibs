@@ -88,3 +88,12 @@ it('takes a row lock before deciding', function (): void {
     expect($locking)->toHaveCount(1)
         ->and($locking[0])->toContain('dibs_slots');
 });
+
+it('leaves a retired slot retired — retirement is terminal (R41)', function (): void {
+    $slot = Slot::factory()->retired()->create();
+    Booking::factory()->for($slot, 'slot')->cancelled()->create();
+
+    (new ReleaseSlot)($slot);
+
+    expect($slot->fresh()->status)->toBe(SlotStatus::Retired);
+});

@@ -224,3 +224,22 @@ it('holds a slot named twice once (R24)', function (): void {
         ->and(OfferSlot::query()->where('offer_id', $offer->getKey())->count())->toBe(1)
         ->and($slot->refresh()->status)->toBe(SlotStatus::Held);
 });
+
+it('stamps a supplied context on the offer (R40)', function (): void {
+    $ward = organization('Oak Hills');
+    $invitee = user('Invitee');
+    $slot = Slot::factory()->create();
+
+    $offer = (new CreateOffer)($invitee, [$slot], null, null, null, [], $ward);
+
+    expect($offer->context_type)->toBe('organization')
+        ->and($offer->context_id)->toBe((string) $ward->getKey())
+        ->and(Offer::forContext($ward)->pluck('id')->all())->toBe([$offer->id]);
+});
+
+it('leaves an offer without a context when none is supplied', function (): void {
+    $offer = (new CreateOffer)(user('Invitee'), [Slot::factory()->create()]);
+
+    expect($offer->context_type)->toBeNull()
+        ->and($offer->context_id)->toBeNull();
+});
