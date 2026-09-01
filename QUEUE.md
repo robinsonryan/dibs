@@ -22,3 +22,5 @@
   a stored `(context_type, context_id)` pair alongside the model form, and have
   `AcceptOffer` pass the pair. Found by the follow-up review (2026-09-01);
   consumers deleting tenants with pending offers is the only trigger.~~ **Fixed in 0.1.1.**
+
+- **`AcceptOffer` should accept a `BookingOptions`** (at least `type`/`meta`) so a consumer booking a different kind into a labelled slot need not rewrite `type` after acceptance (ccstake slice 2 BD32/BD36, 2026-09-01).
