@@ -2,7 +2,13 @@
     "preset": "laravel",
     "rules": {
         "declare_strict_types": true,
-        "final_class": true,
+        "final_internal_class": {
+            "include": [],
+            "exclude": [
+                "extensible"
+            ],
+            "consider_absent_docblock_as_internal_class": true
+        },
         "global_namespace_import": {
             "import_classes": true,
             "import_constants": true,
@@ -10,14 +16,27 @@
         },
         "ordered_imports": {
             "sort_algorithm": "alpha",
-            "imports_order": ["const", "class", "function"]
+            "imports_order": [
+                "const",
+                "class",
+                "function"
+            ]
         },
         "no_unused_imports": true,
         "trailing_comma_in_multiline": {
-            "elements": ["arguments", "arrays", "match", "parameters"]
+            "elements": [
+                "arguments",
+                "arrays",
+                "match",
+                "parameters"
+            ]
         },
         "blank_line_before_statement": {
-            "statements": ["return", "throw", "try"]
+            "statements": [
+                "return",
+                "throw",
+                "try"
+            ]
         },
         "single_line_empty_body": true,
         "fully_qualified_strict_types": true

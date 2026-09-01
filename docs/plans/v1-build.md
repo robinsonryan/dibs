@@ -1,0 +1,50 @@
+# Dibs v1 — build plan (orchestration record)
+
+Tier: **FULL** — migrations, a concurrency-critical booking path, four modules.
+Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here).
+
+## Build decisions (beyond the spec's D1–D13)
+
+| ID | Decision | Why |
+|----|----------|-----|
+| B1 | Models are **extendable (not `final`)**; every other class is `final`. Pint's `final_class` rule is replaced by `final_internal_class` configured so classes annotated `@extensible` are exempt. | R35 (config class-map, "must extend the package's") is unimplementable with `final` models. `final_class` has no per-class opt-out. Deviates from the canonical hey-you `pint.json` — flag to Ryan. |
+| B2 | `table_prefix` config key kept alongside `models` and `token_length`. | Package convention (prefixer); scaffold already shipped it. Spec §7's "nothing else" targets tz/permission/notification config. |
+| B3 | Concurrency test (R13) lives in `tests/Concurrency/` on `DatabaseTruncation` (real commits) with a second named connection `testing_b`; deterministic via `lock_timeout` while connection A holds the row lock, then retry after A commits → `SlotUnavailable`. | RefreshDatabase wraps each test in a transaction, so a second connection can never see the fixtures. |
+| B4 | Action names: `PublishAvailability`, `CloseAvailability`, `ReopenAvailability`? — **no**: `PublishAvailability` handles both `draft→published` and `closed→published`. `UpdateAvailabilityGeometry` for D6 regeneration, `DuplicateAvailability`, `DeleteAvailability`. | Spec names most; geometry edit and deletion needed names. |
+| B5 | `BookingOptions` readonly DTO: `guardHostOverlap=false`, `type=null`, `meta=[]`, `viaOffer=false`. `viaOffer` is the D11 relaxation switch used only by `AcceptOffer`. | One BookSlot code path for both routes. |
+| B6 | Events dispatched with `DB::afterCommit(fn () => event(...))` inside the action's `DB::transaction`. No dispatcher contract. | Spec §5 mandates after-commit; hey-you's indirection buys nothing here. |
+| B7 | Status enums are backed string enums (`AvailabilityStatus`, `SlotStatus`, `BookingStatus`, `OfferStatus`) with `canTransitionTo()`; columns stay `string`, models cast. | Spec's state machines in one place per model. |
+| B8 | `Dibs::model(Foo::class)` static resolver (config `models` keyed by the package class) returns the configured `class-string<Foo>`; all package-internal relationships/queries go through it. | R35; class-keyed map keeps PHPStan generics honest. |
+| B9 | `AdhocSlotSpec(startsAt, endsAt, location, capacity=1)` readonly DTO for adhoc slot creation in offers. | CreateOffer takes a mix of `Slot` and specs. |
+| B10 | `Slot::bookable()` binds PHP `CarbonImmutable::now('UTC')` as the reference instant and does interval math in SQL (`make_interval`). | Testable with `Carbon::setTestNow`; UTC-only (D10/R36). |
+| B11 | Morph `*_id` columns are `string`, `*_type` string; no `morphs()` helper. | Consumers may key by uuid or bigint; the package never assumes. |
+| B12 | The suite registers a `Relation::morphMap` for its fixtures (`user`, `room`, `organization`), so stored `*_type` values are aliases, proving the package respects the consumer's map. | Spec §4. |
+| B13 | Concurrency-safe slot fullness: BookSlot counts active bookings under the row lock rather than trusting `status`. | `status` is a derived cache; the lock + count is the truth. |
+
+## Module ownership (disjoint)
+
+| Module | Owner | Files |
+|---|---|---|
+| **Foundation** (frozen after commit) | orchestrator | `database/migrations/*`, `database/factories/*`, `src/Concerns/*`, `src/Enums/*`, `src/Models/*`, `src/Exceptions/*`, `src/Events/*`, `src/Data/*`, `src/Support/Dibs.php`, `src/Support/TablePrefixer.php`, `src/DibsServiceProvider.php`, `config/dibs.php`, `tests/TestCase.php`, `tests/Pest.php`, `tests/Fixtures/*`, `tests/Feature/Foundation/*`, `pint.json` |
+| **A — Availability lifecycle** | builder A | `src/Actions/PublishAvailability.php`, `CloseAvailability.php`, `UpdateAvailabilityGeometry.php`, `DuplicateAvailability.php`, `DeleteAvailability.php`, `src/Support/SlotGrid.php`, `tests/Unit/SlotGridTest.php`, `tests/Feature/Availability/*` |
+| **B — Booking core** | builder B | `src/Actions/BookSlot.php`, `CreateDirectBooking.php`, `CancelBooking.php`, `CompleteBooking.php`, `MarkNoShow.php`, `src/Support/OverlapCheck.php`, `src/Support/ReleaseSlot.php`, `tests/Feature/Booking/*`, `tests/Concurrency/*` |
+| **C — Offers** (wave 2, after B merges) | builder C | `src/Actions/CreateOffer.php`, `AcceptOffer.php`, `WithdrawOffer.php`, `ExpireOffers.php`, `tests/Feature/Offer/*` |
+| Manifests (orchestrator only) | orchestrator | `CHANGELOG.md`, `README.md`, `docs/SPEC.md`, `QUEUE.md`, this file |
+
+Foundation stubs for cross-module contracts (`BookSlot`, `ReleaseSlot`) ship with
+`throw new LogicException('not implemented')` bodies and are replaced by module B.
+
+Worktrees: `.claude/worktrees/<mod>` on branches `feature/<mod>`; test DB per tree via
+`DIBS_TEST_DB_DATABASE=testing_wt_<mod>`; driven with
+`ddev exec --dir /var/www/html/.claude/worktrees/<mod> "..."`.
+
+## Waves
+
+1. Foundation (solo) → commit on `feature/v1`.
+2. Builders A + B in parallel → merge into `feature/v1` → full gate.
+3. Builder C (offers) + reviewers for A and B in parallel.
+4. Merge C → full gate → reviewer C → single remediator → full gate → audit.
+
+## Review findings
+
+Written to `docs/plans/reviews/<module>.md` (no GitHub remote; no PRs).

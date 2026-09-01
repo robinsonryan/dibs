@@ -1,0 +1,5 @@
+#!/bin/bash
+## Description: Run the full package gate (lint:check, analyze, refactor:check, test)
+## Usage: quality
+## Example: ddev quality
+ddev exec composer quality

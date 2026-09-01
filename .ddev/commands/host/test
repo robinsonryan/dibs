@@ -1,0 +1,5 @@
+#!/bin/bash
+## Description: Run the Pest suite
+## Usage: test [args]
+## Example: ddev test --filter=Foo
+ddev exec composer test -- "$@"

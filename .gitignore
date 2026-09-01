@@ -21,3 +21,4 @@ coverage/
 .claude/skills
 .claude/scheduled_tasks
 .claude/scheduled_tasks.lock
+.claude/worktrees
