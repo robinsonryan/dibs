@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Exceptions\DeletionRefused;
 use RobinsonRyan\Dibs\Models\Availability;
+use RobinsonRyan\Dibs\Models\Slot;
 
 /**
  * Delete an availability, cascading its slots and host pool. Refused while any
@@ -18,11 +19,16 @@ final class DeleteAvailability
     public function __invoke(Availability $availability): void
     {
         DB::transaction(function () use ($availability): void {
-            if ($availability->slots()->where('status', SlotStatus::Held->value)->count() > 0) {
+            // Every refusal below is decided from these locked rows, so an offer
+            // taking a hold or a booking landing mid-check queues behind the
+            // delete instead of slipping through it.
+            $slots = $availability->slots()->lockForUpdate()->get();
+
+            if ($slots->contains(fn (Slot $slot): bool => $slot->status === SlotStatus::Held)) {
                 throw DeletionRefused::for($availability, 'one of its slots is held.');
             }
 
-            if ($availability->slots()->has('bookings')->count() > 0) {
+            if ($availability->slots()->has('bookings')->exists()) {
                 throw DeletionRefused::for($availability, 'one of its slots has bookings.');
             }
 

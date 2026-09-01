@@ -55,6 +55,9 @@ it('leaves every slot row exactly as it was', function (): void {
             $slot->id, $slot->status->value, $slot->starts_at->toIso8601String(), $slot->ends_at->toIso8601String(), $slot->updated_at?->toIso8601String(),
         ])->all();
 
+    // Move the clock on, so a touched row would carry a different updated_at.
+    CarbonImmutable::setTestNow(CarbonImmutable::now()->addMinute());
+
     (new CloseAvailability)($availability);
 
     $after = $availability->slots()->orderBy('starts_at')->get()

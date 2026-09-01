@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace RobinsonRyan\Dibs\Actions;
 
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Events\AvailabilityClosed;
 use RobinsonRyan\Dibs\Exceptions\InvalidTransition;
 use RobinsonRyan\Dibs\Models\Availability;
+use RobinsonRyan\Dibs\Support\Dibs;
 
 /**
  * Close a published availability (§5.1). Slot rows and their bookings are left
@@ -19,22 +21,27 @@ final class CloseAvailability
     public function __invoke(Availability $availability): Availability
     {
         return DB::transaction(function () use ($availability): Availability {
-            $availability->refresh();
+            // Decided from the locked row, not the caller's copy.
+            $locked = Dibs::lock($availability);
 
-            $from = $availability->status;
-
-            if (! $from->canTransitionTo(AvailabilityStatus::Closed)) {
-                throw InvalidTransition::for($availability, $from, AvailabilityStatus::Closed);
+            if (! $locked instanceof Availability) {
+                throw (new ModelNotFoundException)->setModel($availability::class, [$availability->getKey()]);
             }
 
-            $availability->status = AvailabilityStatus::Closed;
-            $availability->save();
+            $from = $locked->status;
 
-            $availability->load(['slots', 'hosts']);
+            if (! $from->canTransitionTo(AvailabilityStatus::Closed)) {
+                throw InvalidTransition::for($locked, $from, AvailabilityStatus::Closed);
+            }
 
-            DB::afterCommit(fn () => event(new AvailabilityClosed($availability)));
+            $locked->status = AvailabilityStatus::Closed;
+            $locked->save();
 
-            return $availability;
+            $locked->load(['slots', 'hosts']);
+
+            DB::afterCommit(fn () => event(new AvailabilityClosed($locked)));
+
+            return $locked;
         });
     }
 }
