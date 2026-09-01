@@ -168,3 +168,59 @@ it('takes a held slot out of the bookable scope and refuses a direct booking on 
         ->and(fn (): Booking => (new BookSlot)($slot->refresh(), user('Gatecrasher'), user('Gatecrasher')))
         ->toThrow(SlotUnavailable::class);
 });
+
+it('refuses an adhoc spec whose window does not move forward, writing nothing', function (int $minutes): void {
+    $start = CarbonImmutable::now('UTC')->addDays(3)->startOfHour();
+
+    expect(fn (): Offer => (new CreateOffer)(user('Invitee'), [new AdhocSlotSpec($start, $start->addMinutes($minutes))]))
+        ->toThrow(InvalidArgumentException::class)
+        ->and(Slot::query()->count())->toBe(0)
+        ->and(Offer::query()->count())->toBe(0);
+})->with([0, -45]);
+
+it('refuses an adhoc spec that starts in the past, writing nothing', function (): void {
+    $start = CarbonImmutable::now('UTC')->subHour();
+
+    expect(fn (): Offer => (new CreateOffer)(user('Invitee'), [new AdhocSlotSpec($start, $start->addMinutes(30))]))
+        ->toThrow(InvalidArgumentException::class)
+        ->and(Slot::query()->count())->toBe(0)
+        ->and(Offer::query()->count())->toBe(0);
+});
+
+it('releases nothing and holds nothing when a later adhoc spec is invalid', function (): void {
+    $existing = Slot::factory()->create();
+    $past = CarbonImmutable::now('UTC')->subHour();
+
+    expect(fn (): Offer => (new CreateOffer)(user('Invitee'), [$existing, new AdhocSlotSpec($past, $past->addMinutes(30))]))
+        ->toThrow(InvalidArgumentException::class)
+        ->and($existing->refresh()->status)->toBe(SlotStatus::Open)
+        ->and(Offer::query()->count())->toBe(0)
+        ->and(OfferSlot::query()->count())->toBe(0);
+});
+
+it('refuses an expiry that has already passed, writing nothing', function (): void {
+    $slot = Slot::factory()->create();
+
+    expect(fn (): Offer => (new CreateOffer)(user('Invitee'), [$slot], CarbonImmutable::now('UTC')->subMinute()))
+        ->toThrow(InvalidArgumentException::class)
+        ->and($slot->refresh()->status)->toBe(SlotStatus::Open)
+        ->and(Offer::query()->count())->toBe(0);
+});
+
+it('refuses an expiry of exactly now, writing nothing', function (): void {
+    $slot = Slot::factory()->create();
+
+    expect(fn (): Offer => (new CreateOffer)(user('Invitee'), [$slot], CarbonImmutable::now('UTC')))
+        ->toThrow(InvalidArgumentException::class)
+        ->and(Offer::query()->count())->toBe(0);
+});
+
+it('holds a slot named twice once (R24)', function (): void {
+    $slot = Slot::factory()->create();
+
+    $offer = (new CreateOffer)(user('Invitee'), [$slot, $slot]);
+
+    expect($offer->slots)->toHaveCount(1)
+        ->and(OfferSlot::query()->where('offer_id', $offer->getKey())->count())->toBe(1)
+        ->and($slot->refresh()->status)->toBe(SlotStatus::Held);
+});

@@ -123,6 +123,10 @@ it('never touches a held or booked slot, even outside the new window', function 
     $heldBefore = $slots[2]->fresh();
     $bookedBefore = $slots[3]->fresh();
 
+    // Move the clock on, so an accidental touch would stamp a different
+    // updated_at and the assertions below can actually fail.
+    CarbonImmutable::setTestNow(CarbonImmutable::now()->addMinute());
+
     (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
         geometryAt('2026-03-08 09:00'),
         geometryAt('2026-03-08 10:00'),

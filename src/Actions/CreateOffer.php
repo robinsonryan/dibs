@@ -32,12 +32,10 @@ final class CreateOffer
      */
     public function __invoke(Model $offeredTo, iterable $slots, ?CarbonImmutable $expiresAt = null, ?Model $createdBy = null, ?string $message = null, array $meta = []): Offer
     {
-        return DB::transaction(function () use ($offeredTo, $slots, $expiresAt, $createdBy, $message, $meta): Offer {
-            $held = [];
+        $this->assertExpiryIsAhead($expiresAt);
 
-            foreach ($slots as $slot) {
-                $held[] = $slot instanceof Slot ? $this->hold($slot) : $this->createAdhoc($slot);
-            }
+        return DB::transaction(function () use ($offeredTo, $slots, $expiresAt, $createdBy, $message, $meta): Offer {
+            $held = $this->holdAll($slots);
 
             if ($held === []) {
                 throw new InvalidArgumentException('An offer must name at least one slot.');
@@ -71,15 +69,61 @@ final class CreateOffer
     }
 
     /**
+     * An offer with an expiry already behind it would be dead on arrival.
+     */
+    private function assertExpiryIsAhead(?CarbonImmutable $expiresAt): void
+    {
+        if ($expiresAt instanceof CarbonImmutable && $expiresAt->lessThanOrEqualTo(CarbonImmutable::now('UTC'))) {
+            throw new InvalidArgumentException('An offer cannot expire in the past.');
+        }
+    }
+
+    /**
+     * Existing slots first, deduplicated and locked in key order so two offers
+     * naming the same pair in opposite orders queue up instead of deadlocking;
+     * adhoc specs, which lock nothing, follow.
+     *
+     * @param  iterable<int, Slot|AdhocSlotSpec>  $slots
+     * @return list<Slot>
+     */
+    private function holdAll(iterable $slots): array
+    {
+        /** @var array<string, Slot> $existing */
+        $existing = [];
+        $specs = [];
+
+        foreach ($slots as $slot) {
+            if ($slot instanceof Slot) {
+                $existing[(string) $slot->getKey()] = $slot;
+
+                continue;
+            }
+
+            $specs[] = $slot;
+        }
+
+        ksort($existing, SORT_STRING);
+
+        $held = [];
+
+        foreach ($existing as $slot) {
+            $held[] = $this->hold($slot);
+        }
+
+        foreach ($specs as $spec) {
+            $held[] = $this->createAdhoc($spec);
+        }
+
+        return $held;
+    }
+
+    /**
      * Held exclusively, decided from the slot's locked row so two offers cannot
      * both claim it.
      */
     private function hold(Slot $slot): Slot
     {
-        $locked = Dibs::query(Slot::class)
-            ->whereKey($slot->getKey())
-            ->lockForUpdate()
-            ->first();
+        $locked = Dibs::lock($slot);
 
         if (! $locked instanceof Slot) {
             throw SlotNotOfferable::for($slot, 'it no longer exists');
@@ -109,6 +153,8 @@ final class CreateOffer
      */
     private function createAdhoc(AdhocSlotSpec $spec): Slot
     {
+        $spec->ensureValid();
+
         if ($spec->capacity !== 1) {
             throw new InvalidArgumentException('An offer can only hold a capacity-1 slot; the spec asked for '.$spec->capacity.'.');
         }

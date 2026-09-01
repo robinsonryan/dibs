@@ -6,12 +6,14 @@ namespace RobinsonRyan\Dibs\Actions;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Data\AvailabilityGeometry;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Slot;
+use RobinsonRyan\Dibs\Support\Dibs;
 use RobinsonRyan\Dibs\Support\SlotGrid;
 
 /**
@@ -26,9 +28,16 @@ final class UpdateAvailabilityGeometry
             // Validate before writing anything: an invalid geometry changes nothing.
             $positions = SlotGrid::positions($geometry);
 
-            $availability->refresh();
+            // Decided from the locked row: a rival publish, close or geometry
+            // edit queues behind this one, so draft-vs-published and the grid
+            // that lands are read from the same serialised copy.
+            $locked = Dibs::lock($availability);
 
-            $availability->fill([
+            if (! $locked instanceof Availability) {
+                throw (new ModelNotFoundException)->setModel($availability::class, [$availability->getKey()]);
+            }
+
+            $locked->fill([
                 'starts_at' => $geometry->startsAt->utc(),
                 'ends_at' => $geometry->endsAt->utc(),
                 'slot_duration_minutes' => $geometry->slotDurationMinutes,
@@ -36,13 +45,13 @@ final class UpdateAvailabilityGeometry
             ])->save();
 
             // A draft has no slots yet; publishing lays down the new grid.
-            if ($availability->status !== AvailabilityStatus::Draft) {
-                $this->regenerate($availability, $positions);
+            if ($locked->status !== AvailabilityStatus::Draft) {
+                $this->regenerate($locked, $positions);
             }
 
-            $availability->load('slots');
+            $locked->load('slots');
 
-            return $availability;
+            return $locked;
         });
     }
 
@@ -54,7 +63,7 @@ final class UpdateAvailabilityGeometry
         // Held, booked, and open-with-history slots are never disturbed, even
         // when they now fall outside the window (D6).
         $availability->slots()
-            ->where('status', SlotStatus::Open->value)
+            ->open()
             ->whereDoesntHave('bookings')
             ->delete();
 

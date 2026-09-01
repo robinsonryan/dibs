@@ -25,6 +25,8 @@ final class CreateDirectBooking
      */
     public function __invoke(Model $bookedFor, Model $bookedBy, AdhocSlotSpec $spec, array $hosts = [], BookingOptions $options = new BookingOptions): Booking
     {
+        $spec->ensureValid();
+
         return DB::transaction(function () use ($bookedFor, $bookedBy, $spec, $hosts, $options): Booking {
             $slot = Dibs::query(Slot::class)->create([
                 'availability_id' => null,

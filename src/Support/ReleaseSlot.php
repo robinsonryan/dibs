@@ -19,10 +19,7 @@ final class ReleaseSlot
 {
     public function __invoke(Slot $slot): void
     {
-        $locked = Dibs::query(Slot::class)
-            ->whereKey($slot->getKey())
-            ->lockForUpdate()
-            ->first();
+        $locked = Dibs::lock($slot);
 
         if (! $locked instanceof Slot) {
             return;

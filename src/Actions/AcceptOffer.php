@@ -26,10 +26,7 @@ final class AcceptOffer
     public function __invoke(Offer $offer, Slot $chosenSlot, ?Model $bookedBy = null): Booking
     {
         return DB::transaction(function () use ($offer, $chosenSlot, $bookedBy): Booking {
-            $locked = Dibs::query(Offer::class)
-                ->whereKey($offer->getKey())
-                ->lockForUpdate()
-                ->first();
+            $locked = Dibs::lock($offer);
 
             if (! $locked instanceof Offer) {
                 throw OfferNotAcceptable::for($offer, 'it no longer exists');

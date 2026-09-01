@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Event;
 use RobinsonRyan\Dibs\Actions\DuplicateAvailability;
 use RobinsonRyan\Dibs\Actions\PublishAvailability;
@@ -60,6 +61,21 @@ it('copies every carried attribute into a new draft at the supplied window', fun
         ->and($copy->context_id)->toBe($source->context_id)
         ->and($copy->meta)->toBe(['note' => 'weekly'])
         ->and($copy->id)->toBeUuidV7();
+});
+
+it('carries every column the source has, bar the window, the status and the row identity', function (): void {
+    $source = duplicateSource();
+
+    $copy = (new DuplicateAvailability)($source, duplicateAt('2026-03-15 09:00'), duplicateAt('2026-03-15 11:00'));
+
+    // Whatever columns an extended model adds travel with the copy, because it
+    // is replicated rather than column-listed.
+    $ignored = ['id', 'status', 'starts_at', 'ends_at', 'created_at', 'updated_at'];
+
+    expect(Arr::except($copy->fresh()?->getAttributes() ?? [], $ignored))
+        ->toBe(Arr::except($source->fresh()?->getAttributes() ?? [], $ignored))
+        ->and(array_keys($copy->fresh()?->getAttributes() ?? []))
+        ->toBe(array_keys($source->fresh()?->getAttributes() ?? []));
 });
 
 it('copies the host pool row for row', function (): void {

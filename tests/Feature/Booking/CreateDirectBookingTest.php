@@ -11,7 +11,6 @@ use RobinsonRyan\Dibs\Enums\BookingStatus;
 use RobinsonRyan\Dibs\Enums\SlotOrigin;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Exceptions\HostOverlap;
-use RobinsonRyan\Dibs\Exceptions\SlotUnavailable;
 use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\BookingHost;
 use RobinsonRyan\Dibs\Models\Slot;
@@ -126,7 +125,63 @@ it('refuses a spec in the past, leaving no slot behind', function (): void {
         $member,
         $member,
         new AdhocSlotSpec($start, $start->addMinutes(30)),
-    ))->toThrow(SlotUnavailable::class);
+    ))->toThrow(InvalidArgumentException::class);
 
     expect(Slot::query()->count())->toBe(0);
+});
+
+it('refuses a spec whose window does not move forward, leaving no slot behind', function (int $length): void {
+    $member = user('Member');
+    $start = CarbonImmutable::now('UTC')->addHour();
+
+    expect(fn (): Booking => (new CreateDirectBooking)(
+        $member,
+        $member,
+        new AdhocSlotSpec($start, $start->addMinutes($length)),
+    ))->toThrow(InvalidArgumentException::class);
+
+    expect(Slot::query()->count())->toBe(0)
+        ->and(Booking::query()->count())->toBe(0);
+})->with([0, -30]);
+
+it('refuses a spec starting exactly now', function (): void {
+    $member = user('Member');
+    $now = CarbonImmutable::now('UTC');
+
+    expect(fn (): Booking => (new CreateDirectBooking)(
+        $member,
+        $member,
+        new AdhocSlotSpec($now, $now->addMinutes(30)),
+    ))->toThrow(InvalidArgumentException::class);
+
+    expect(Slot::query()->count())->toBe(0);
+});
+
+it('assigns a host listed twice only once (R17)', function (): void {
+    $member = user('Member');
+    $alice = user('Alice');
+
+    $booking = (new CreateDirectBooking)(
+        $member,
+        $member,
+        directSpec(),
+        [new HostAssignment($alice, 'interviewer'), new HostAssignment($alice, 'interviewer')],
+    );
+
+    expect($booking->hosts()->count())->toBe(1)
+        ->and($booking->hosts()->first()?->host_id)->toBe((string) $alice->getKey());
+});
+
+it('keeps one person in two roles as two assignments', function (): void {
+    $member = user('Member');
+    $alice = user('Alice');
+
+    $booking = (new CreateDirectBooking)(
+        $member,
+        $member,
+        directSpec(),
+        [new HostAssignment($alice, 'interviewer'), new HostAssignment($alice, 'scribe')],
+    );
+
+    expect($booking->hosts()->orderBy('role')->pluck('role')->all())->toBe(['interviewer', 'scribe']);
 });

@@ -48,10 +48,7 @@ final class BookSlot
      */
     public function claim(Slot $slot, Model $bookedFor, Model $bookedBy, BookingOptions $options, ?array $hosts = null): Booking
     {
-        $locked = Dibs::query(Slot::class)
-            ->whereKey($slot->getKey())
-            ->lockForUpdate()
-            ->first();
+        $locked = Dibs::lock($slot);
 
         if (! $locked instanceof Slot) {
             throw SlotUnavailable::for($slot, 'it no longer exists');
@@ -63,7 +60,7 @@ final class BookSlot
 
         $this->assertBookable($locked, $availability, $options);
 
-        $assignments = $hosts ?? $this->autoAssign($availability);
+        $assignments = $this->dedupe($hosts ?? $this->autoAssign($availability));
 
         if ($options->guardHostOverlap) {
             $this->assertHostsAreFree($assignments, $locked);
@@ -188,14 +185,47 @@ final class BookSlot
     }
 
     /**
-     * A query, not a solver (D8) — and it runs before anything is written.
+     * The same host twice over — the caller listed them twice, or two roles
+     * resolved to one person — is one assignment, not a unique-constraint
+     * violation.
+     *
+     * @param  list<HostAssignment>  $assignments
+     * @return list<HostAssignment>
+     */
+    private function dedupe(array $assignments): array
+    {
+        $seen = [];
+        $unique = [];
+
+        foreach ($assignments as $assignment) {
+            $key = implode('|', [
+                $assignment->host->getMorphClass(),
+                (string) $assignment->host->getKey(),
+                $assignment->role,
+            ]);
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $unique[] = $assignment;
+        }
+
+        return $unique;
+    }
+
+    /**
+     * A query, not a solver (D8) — and it runs before anything is written. The
+     * slot being claimed is never its own conflict: a capacity-N slot may seat
+     * two parties under one host.
      *
      * @param  list<HostAssignment>  $assignments
      */
     private function assertHostsAreFree(array $assignments, Slot $slot): void
     {
         foreach ($assignments as $assignment) {
-            $overlapping = OverlapCheck::for($assignment->host, $slot->starts_at, $slot->ends_at);
+            $overlapping = OverlapCheck::forSlot($assignment->host, $slot);
 
             if ($overlapping->isNotEmpty()) {
                 throw new HostOverlap($assignment->host, $overlapping);
@@ -206,7 +236,10 @@ final class BookSlot
     private function write(Slot $slot, Model $bookedFor, Model $bookedBy, BookingOptions $options, ?Availability $availability): Booking
     {
         try {
-            return Dibs::query(Booking::class)->create([
+            // A savepoint of its own: when the unique index rejects the insert,
+            // rolling back to here leaves the caller's transaction usable, so a
+            // caught SlotUnavailable can be followed by more work.
+            return DB::transaction(fn (): Booking => Dibs::query(Booking::class)->create([
                 'slot_id' => $slot->getKey(),
                 'booked_for_type' => $bookedFor->getMorphClass(),
                 'booked_for_id' => (string) $bookedFor->getKey(),
@@ -217,7 +250,7 @@ final class BookSlot
                 'type' => $options->type ?? $availability?->type,
                 'status' => BookingStatus::Booked,
                 'meta' => $options->meta,
-            ]);
+            ]));
         } catch (QueryException $exception) {
             // The partial unique index on live claims.
             if ((string) $exception->getCode() === '23505') {

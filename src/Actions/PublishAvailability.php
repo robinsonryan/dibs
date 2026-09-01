@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace RobinsonRyan\Dibs\Actions;
 
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Data\AvailabilityGeometry;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
@@ -11,6 +12,7 @@ use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Events\AvailabilityPublished;
 use RobinsonRyan\Dibs\Exceptions\InvalidTransition;
 use RobinsonRyan\Dibs\Models\Availability;
+use RobinsonRyan\Dibs\Support\Dibs;
 use RobinsonRyan\Dibs\Support\SlotGrid;
 
 /**
@@ -22,27 +24,32 @@ final class PublishAvailability
     public function __invoke(Availability $availability): Availability
     {
         return DB::transaction(function () use ($availability): Availability {
-            // The caller's copy may predate someone else's transition.
-            $availability->refresh();
+            // Decided from the locked row, never from the caller's copy: a rival
+            // transition queues behind this one instead of being overwritten.
+            $locked = Dibs::lock($availability);
 
-            $from = $availability->status;
+            if (! $locked instanceof Availability) {
+                throw (new ModelNotFoundException)->setModel($availability::class, [$availability->getKey()]);
+            }
+
+            $from = $locked->status;
 
             if (! $from->canTransitionTo(AvailabilityStatus::Published)) {
-                throw InvalidTransition::for($availability, $from, AvailabilityStatus::Published);
+                throw InvalidTransition::for($locked, $from, AvailabilityStatus::Published);
             }
 
-            $availability->status = AvailabilityStatus::Published;
-            $availability->save();
+            $locked->status = AvailabilityStatus::Published;
+            $locked->save();
 
-            if ($availability->slots()->count() === 0) {
-                $this->materialise($availability);
+            if ($locked->slots()->count() === 0) {
+                $this->materialise($locked);
             }
 
-            $availability->load(['slots', 'hosts']);
+            $locked->load(['slots', 'hosts']);
 
-            DB::afterCommit(fn () => event(new AvailabilityPublished($availability)));
+            DB::afterCommit(fn () => event(new AvailabilityPublished($locked)));
 
-            return $availability;
+            return $locked;
         });
     }
 
