@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\MorphTo;
+use RobinsonRyan\Dibs\Concerns\HasContext;
 use RobinsonRyan\Dibs\Concerns\HasUuidPrimaryKey;
 use RobinsonRyan\Dibs\Database\Factories\AvailabilityFactory;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
@@ -39,9 +39,10 @@ use RobinsonRyan\Dibs\Support\TablePrefixer;
  */
 class Availability extends Model
 {
+    use HasContext;
+
     /** @use HasFactory<AvailabilityFactory> */
     use HasFactory;
-
     use HasUuidPrimaryKey;
 
     protected $guarded = [];
@@ -82,16 +83,6 @@ class Availability extends Model
     }
 
     /**
-     * The owning scope (a tenant, an organization); null for single-tenant consumers.
-     *
-     * @return MorphTo<Model, $this>
-     */
-    public function context(): MorphTo
-    {
-        return $this->morphTo('context');
-    }
-
-    /**
      * @return HasMany<Slot, $this>
      */
     public function slots(): HasMany
@@ -116,19 +107,6 @@ class Availability extends Model
     public function scopePublished(Builder $query): Builder
     {
         return $query->where($this->qualifyColumn('status'), AvailabilityStatus::Published->value);
-    }
-
-    /**
-     * Records owned by the given context (tenant / organisation).
-     *
-     * @param  Builder<static>  $query
-     * @return Builder<static>
-     */
-    public function scopeForContext(Builder $query, Model $context): Builder
-    {
-        return $query
-            ->where($this->qualifyColumn('context_type'), $context->getMorphClass())
-            ->where($this->qualifyColumn('context_id'), (string) $context->getKey());
     }
 
     public function isPublished(): bool
