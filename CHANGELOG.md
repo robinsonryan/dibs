@@ -21,3 +21,7 @@ Behavior changes land here in the commit that makes them, not at tag time.
   `Offer::pending()`.
 - Status enums with their transition rules, the ten domain events, and
   factories with a state per status.
+- Availability lifecycle actions: `PublishAvailability`, `CloseAvailability`,
+  `UpdateAvailabilityGeometry`, `DuplicateAvailability`, `DeleteAvailability`.
+- `Support\SlotGrid` — the slot positions an `AvailabilityGeometry` describes
+  (duration + padding, trailing remainder unused).
