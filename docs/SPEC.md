@@ -221,28 +221,28 @@ per the `verification` skill before any "done" claim.
 
 | ID | Requirement | Implementation | Tests | Status |
 |----|-------------|----------------|-------|--------|
-| R1 | Migrations create the seven `dibs_*` tables exactly as §4 (columns, FK actions, defaults) | | | Not started |
-| R2 | All PKs are db-generated uuid v7; models use a package-local uuid-PK concern | | | Not started |
-| R3 | Partial unique index blocks a second live booking by the same `booked_for` on one slot | | | Not started |
-| R4 | `slot_id` FK restrictOnDelete makes deleting a slot with any booking impossible at the DB layer | | | Not started |
-| R5 | Availability status machine: draft→published, published→closed, closed→published; all other transitions throw `InvalidTransition` | | | Not started |
-| R6 | Publishing materializes slots per the §5.1 grid algorithm (duration + padding, trailing remainder unused) | | | Not started |
-| R7 | Publish is idempotent — re-invoking generates no duplicate slots | | | Not started |
-| R8 | Geometry edit regenerates open slots only; booked/held slots survive untouched, including outside the new window | | | Not started |
-| R9 | Regeneration skips grid positions overlapping surviving booked/held slots | | | Not started |
-| R10 | CloseAvailability removes its open slots from `bookable` scope without deleting rows or touching bookings | | | Not started |
-| R11 | DuplicateAvailability copies geometry, type, name, location, and pool into a new draft at a supplied window | | | Not started |
-| R12 | Deleting an availability with held or booked-upon slots throws `DeletionRefused`; a clean one cascades its slots | | | Not started |
-| R13 | BookSlot locks the slot row (`FOR UPDATE`); under two concurrent attempts on the last capacity, exactly one succeeds and the loser gets `SlotUnavailable` (test with two connections) | | | Not started |
-| R14 | BookSlot enforces: open status, published availability, future start, min-notice, max-horizon, remaining capacity | | | Not started |
-| R15 | Slot flips to `booked` only when active bookings reach capacity; capacity-N slots accept N bookings | | | Not started |
-| R16 | Auto-assign: pool of exactly one host for a role → assigned on booking; larger pools left unassigned | | | Not started |
-| R17 | Host pools and assignments accept multiple hosts with distinct roles (thing + person combos) | | | Not started |
-| R18 | `guardHostOverlap` option throws `HostOverlap` when a pooled/assigned host has an overlapping active booking; off by default | | | Not started |
-| R19 | `OverlapCheck::for(host, start, end)` returns overlapping active bookings as public API | | | Not started |
-| R20 | CreateDirectBooking creates an adhoc slot + booking + assignments in one transaction | | | Not started |
-| R21 | Booking `type` defaults from the availability at creation and survives later availability edits (D13) | | | Not started |
-| R22 | CancelBooking stamps `cancelled_at`/`cancelled_by`; future availability-born slot reverts toward `open`; adhoc slot survives (has a booking) but never appears bookable | | | Not started |
+| R1 | Migrations create the seven `dibs_*` tables exactly as §4 (columns, FK actions, defaults) | `database/migrations/2024_01_01_00000{1..7}_*` | `tests/Feature/Foundation/SchemaTest.php` | Done |
+| R2 | All PKs are db-generated uuid v7; models use a package-local uuid-PK concern | `Concerns\HasUuidPrimaryKey` (incrementing=true, keyType=string) | `SchemaTest` "generates uuid v7 primary keys" | Done |
+| R3 | Partial unique index blocks a second live booking by the same `booked_for` on one slot | partial unique index in `..._000004_create_dibs_bookings_table.php` | `SchemaTest` "blocks a second live booking" / "rebook once cancelled" | Done |
+| R4 | `slot_id` FK restrictOnDelete makes deleting a slot with any booking impossible at the DB layer | `slot_id` FK `restrictOnDelete` in bookings migration | `SchemaTest` "refuses to delete a slot that has any booking row" | Done |
+| R5 | Availability status machine: draft→published, published→closed, closed→published; all other transitions throw `InvalidTransition` | `Actions\PublishAvailability`, `Actions\CloseAvailability` via `AvailabilityStatus::canTransitionTo` | `tests/Feature/Availability/AvailabilityStatusMachineTest.php` | Done |
+| R6 | Publishing materializes slots per the §5.1 grid algorithm (duration + padding, trailing remainder unused) | `Support\SlotGrid::positions`, `PublishAvailability` | `tests/Unit/SlotGridTest.php`, `PublishAvailabilityTest` | Done |
+| R7 | Publish is idempotent — re-invoking generates no duplicate slots | `PublishAvailability` (generates only when no slots exist) | `PublishAvailabilityTest` publish→close→reopen | Done |
+| R8 | Geometry edit regenerates open slots only; booked/held slots survive untouched, including outside the new window | `Actions\UpdateAvailabilityGeometry` (deletes open slots with zero bookings only — B15) | `UpdateAvailabilityGeometryTest` | Done |
+| R9 | Regeneration skips grid positions overlapping surviving booked/held slots | `UpdateAvailabilityGeometry` overlap skip | `UpdateAvailabilityGeometryTest` | Done |
+| R10 | CloseAvailability removes its open slots from `bookable` scope without deleting rows or touching bookings | `Actions\CloseAvailability` + `Slot::bookable()` | `CloseAvailabilityTest` | Done |
+| R11 | DuplicateAvailability copies geometry, type, name, location, and pool into a new draft at a supplied window | `Actions\DuplicateAvailability` (also context/notice/horizon/meta — B16) | `DuplicateAvailabilityTest` | Done |
+| R12 | Deleting an availability with held or booked-upon slots throws `DeletionRefused`; a clean one cascades its slots | `Actions\DeleteAvailability` | `DeleteAvailabilityTest` | Done |
+| R13 | BookSlot locks the slot row (`FOR UPDATE`); under two concurrent attempts on the last capacity, exactly one succeeds and the loser gets `SlotUnavailable` (test with two connections) | `Actions\BookSlot` (`lockForUpdate` re-fetch; count under lock) | `tests/Concurrency/BookSlotConcurrencyTest.php` (two connections) | Done |
+| R14 | BookSlot enforces: open status, published availability, future start, min-notice, max-horizon, remaining capacity | `Actions\BookSlot` validations | `tests/Feature/Booking/BookSlotTest.php` | Done |
+| R15 | Slot flips to `booked` only when active bookings reach capacity; capacity-N slots accept N bookings | `BookSlot` settle step (booked iff active ≥ capacity) | `BookSlotTest` capacity-N | Done |
+| R16 | Auto-assign: pool of exactly one host for a role → assigned on booking; larger pools left unassigned | `BookSlot` auto-assign (pool grouped by role, exactly one host) | `BookSlotTest` auto-assign | Done |
+| R17 | Host pools and assignments accept multiple hosts with distinct roles (thing + person combos) | `AvailabilityHost`/`BookingHost` role rows | `BookSlotTest`, `CreateDirectBookingTest`, `HostAssignmentTest` | Done |
+| R18 | `guardHostOverlap` option throws `HostOverlap` when a pooled/assigned host has an overlapping active booking; off by default | `BookingOptions::guardHostOverlap` → `HostOverlap` (hosts being assigned — B17) | `BookSlotTest` guard on/off | Done |
+| R19 | `OverlapCheck::for(host, start, end)` returns overlapping active bookings as public API | `Support\OverlapCheck::for` | `tests/Feature/Booking/OverlapCheckTest.php` | Done |
+| R20 | CreateDirectBooking creates an adhoc slot + booking + assignments in one transaction | `Actions\CreateDirectBooking` (adhoc slot + BookSlot internals + `HostAssignment`s; no `context` — B18) | `CreateDirectBookingTest` | Done |
+| R21 | Booking `type` defaults from the availability at creation and survives later availability edits (D13) | `BookSlot` denormalises `type` at creation | `BookSlotTest` type survives availability edit | Done |
+| R22 | CancelBooking stamps `cancelled_at`/`cancelled_by`; future availability-born slot reverts toward `open`; adhoc slot survives (has a booking) but never appears bookable | `Actions\CancelBooking` + `Support\ReleaseSlot` (D3) | `CancelBookingTest`, `ReleaseSlotTest` | Done |
 | R23 | Booking status machine: booked→completed/cancelled/no_show; completed↔no_show allowed; cancelled terminal; others throw | `Actions\CompleteBooking`, `Actions\MarkNoShow` via `BookingStatus::canTransitionTo` | `tests/Feature/Booking/BookingOutcomeTest.php` | Done |
 | R24 | CreateOffer holds existing open capacity-1 slots and creates adhoc specs as held; mixing both in one offer works | | | Not started |
 | R25 | CreateOffer refuses capacity>1 slots (D12) | | | Not started |
@@ -252,14 +252,14 @@ per the `verification` skill before any "done" claim.
 | R29 | AcceptOffer refuses a pending offer past `expires_at` even if no sweep has run | | | Not started |
 | R30 | WithdrawOffer releases all slots per D3 | | | Not started |
 | R31 | ExpireOffers sweeps all overdue pending offers, releases slots, fires one `OfferExpired` each; idempotent | | | Not started |
-| R32 | Held slots never appear in `bookable` scope | | | Not started |
+| R32 | Held slots never appear in `bookable` scope | `Slot::scopeBookable` (status = open) | `tests/Feature/Foundation/ScopesTest.php` "excludes held and booked" | Done |
 | R33 | The ten §6 events fire after commit, each carrying its loaded model(s) | | | Not started |
-| R34 | All §5.4 scopes behave as specified (incl. notice/horizon math inside `bookable`) | | | Not started |
-| R35 | Config `models` map substitutes extended models throughout the package's own queries | | | Not started |
+| R34 | All §5.4 scopes behave as specified (incl. notice/horizon math inside `bookable`) | scopes on `Availability`, `Slot`, `Booking`, `Offer` | `ScopesTest` (11 cases incl. notice/horizon math) | Done |
+| R35 | Config `models` map substitutes extended models throughout the package's own queries | `Support\Dibs::model/make/query`; relationships + factory `modelName()` resolve through it | `tests/Feature/Foundation/ModelResolverTest.php` | Done |
 | R36 | Package stores/compares UTC instants only; no timezone conversion anywhere in package code (D10) | | | Not started |
-| R37 | Test suite runs on real PostgreSQL via Testbench (taxon TestCase pattern); no SQLite anywhere | | | Not started |
+| R37 | Test suite runs on real PostgreSQL via Testbench (taxon TestCase pattern); no SQLite anywhere | `tests/TestCase.php` (pgsql, per-worktree `testing_wt_<slug>`), `tests/Pest.php` | whole suite; `SchemaTest` asserts timestamptz/jsonb | Done |
 | R38 | `ddev composer quality` passes: Pint, PHPStan L8 zero-ignore, Rector check, full Pest suite | | | Not started |
-| R39 | Factories exist for all models; states for each status | | | Not started |
+| R39 | Factories exist for all models; states for each status | `database/factories/*Factory.php` | `tests/Feature/Foundation/FactoriesTest.php` | Done |
 
 ## 9a. Non-goals (explicit exclusions)
 
