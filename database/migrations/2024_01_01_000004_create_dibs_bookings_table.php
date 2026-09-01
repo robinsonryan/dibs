@@ -21,6 +21,11 @@ return new class extends Migration
             $table->foreignUuid('slot_id')
                 ->constrained(TablePrefixer::prefix('slots'))
                 ->restrictOnDelete();
+            // The owning scope, copied from the availability at creation (or
+            // supplied for a direct booking) so every booking answers "whose is
+            // this?" without a join — the D13 rule applied to tenancy.
+            $table->string('context_type')->nullable();
+            $table->string('context_id')->nullable();
             $table->string('booked_for_type');
             $table->string('booked_for_id');
             $table->string('booked_by_type');
@@ -37,6 +42,7 @@ return new class extends Migration
             $table->index(['booked_for_type', 'booked_for_id'], $name.'_booked_for_index');
             $table->index(['booked_by_type', 'booked_by_id'], $name.'_booked_by_index');
             $table->index(['slot_id', 'status']);
+            $table->index(['context_type', 'context_id'], $name.'_context_index');
         });
 
         // The same person cannot hold two live claims on one slot.

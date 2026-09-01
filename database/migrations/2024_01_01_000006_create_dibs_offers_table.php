@@ -18,6 +18,10 @@ return new class extends Migration
             $table->uuid('id')->primary()->default(DB::raw('uuidv7()'));
             // the only lookup key a link carries
             $table->string('token')->unique();
+            // The owning scope, supplied at creation; an all-adhoc offer has no
+            // availability to inherit one from.
+            $table->string('context_type')->nullable();
+            $table->string('context_id')->nullable();
             $table->string('offered_to_type');
             $table->string('offered_to_id');
             $table->string('created_by_type')->nullable();
@@ -34,6 +38,7 @@ return new class extends Migration
 
             $table->index(['offered_to_type', 'offered_to_id'], $name.'_offered_to_index');
             $table->index(['status', 'expires_at']);
+            $table->index(['context_type', 'context_id'], $name.'_context_index');
         });
     }
 

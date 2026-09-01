@@ -54,6 +54,15 @@ Behavior changes land here in the commit that makes them, not at tag time.
 - `DuplicateAvailability` copies every column of the source (a consumer
   subclass's extra columns travel with the copy).
 
+- Tenancy: `context_type`/`context_id` on bookings (copied from the
+  availability at booking time, or supplied for a direct booking) and on offers
+  (supplied), with `forContext($model)` scopes on `Availability`, `Booking` and
+  `Offer`.
+- Slot state `retired`: an open slot carrying cancelled-booking history that a
+  grid regeneration displaces is retired (history kept, out of `bookable()` and
+  `upcoming()`, position reused) instead of staying bookable off-pattern.
+  `Slot::retired()` scope.
+
 ### Changed
 
 - `PublishAvailability`, `CloseAvailability`, `UpdateAvailabilityGeometry`,

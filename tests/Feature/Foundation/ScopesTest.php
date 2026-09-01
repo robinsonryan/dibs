@@ -79,11 +79,20 @@ it('bookable: measures against a supplied instant', function (): void {
         ->and(Slot::bookable(CarbonImmutable::now()->subDays(2))->pluck('id')->all())->toBe([$slot->id]);
 });
 
-it('upcoming: any future slot regardless of status', function (): void {
+it('upcoming: any live future slot, never a retired one', function (): void {
     Slot::factory()->past()->create();
+    Slot::factory()->retired()->at(CarbonImmutable::now()->addDay())->create();
     $held = Slot::factory()->held()->at(CarbonImmutable::now()->addDay())->create();
 
     expect(Slot::upcoming()->pluck('id')->all())->toBe([$held->id]);
+});
+
+it('bookable and retired: a retired slot is history only', function (): void {
+    $retired = Slot::factory()->retired()->at(CarbonImmutable::now()->addDay())->create();
+    Slot::factory()->at(CarbonImmutable::now()->addDay())->create();
+
+    expect(bookableIds())->not->toContain($retired->id)
+        ->and(Slot::retired()->pluck('id')->all())->toBe([$retired->id]);
 });
 
 it('booking active and upcoming', function (): void {

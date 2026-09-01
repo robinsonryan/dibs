@@ -25,6 +25,8 @@ use RobinsonRyan\Dibs\Support\TablePrefixer;
  *
  * @property string $id
  * @property string $token
+ * @property string|null $context_type
+ * @property string|null $context_id
  * @property string $offered_to_type
  * @property string $offered_to_id
  * @property string|null $created_by_type
@@ -73,6 +75,16 @@ class Offer extends Model
     protected static function newFactory(): OfferFactory
     {
         return OfferFactory::new();
+    }
+
+    /**
+     * The owning scope, supplied at creation.
+     *
+     * @return MorphTo<Model, $this>
+     */
+    public function context(): MorphTo
+    {
+        return $this->morphTo('context');
     }
 
     /**
@@ -139,6 +151,19 @@ class Offer extends Model
                     ->whereNull($this->qualifyColumn('expires_at'))
                     ->orWhere($this->qualifyColumn('expires_at'), '>', $now);
             });
+    }
+
+    /**
+     * Records owned by the given context (tenant / organisation).
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeForContext(Builder $query, Model $context): Builder
+    {
+        return $query
+            ->where($this->qualifyColumn('context_type'), $context->getMorphClass())
+            ->where($this->qualifyColumn('context_id'), (string) $context->getKey());
     }
 
     public function isExpired(?CarbonInterface $now = null): bool

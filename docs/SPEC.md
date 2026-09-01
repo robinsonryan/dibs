@@ -23,7 +23,7 @@ real PostgreSQL, PHPStan level 8 zero-ignore, `composer quality` gate.
 | Concept | Name | States / notes |
 |---|---|---|
 | Published window of bookable time | **Availability** | `draft`, `published`, `closed` |
-| One bookable time | **Slot** | `open`, `held`, `booked` |
+| One bookable time | **Slot** | `open`, `held`, `booked`, `retired` (history only: displaced by a grid regeneration after its booking was cancelled; never bookable or upcoming) |
 | Slot provenance | **origin** (derived, not stored) | `availability` (has `availability_id`), `adhoc` (null) |
 | Who fulfills a booking | **Host** (polymorphic; pool attaches to an Availability, assignment to a Booking, each with a `role`) | — |
 | The claim on a slot | **Booking** | `booked`, `completed`, `cancelled`, `no_show` |
@@ -84,7 +84,7 @@ respect the consumer's morph map; the package never assumes FQCNs.
 | `starts_at` / `ends_at` | timestampTz | |
 | `location` | string nullable | overrides availability's; required source of truth for adhoc slots |
 | `capacity` | unsigned smallint | default 1 |
-| `status` | string | `open` / `held` / `booked` (`booked` = full) |
+| `status` | string | `open` / `held` / `booked` (`booked` = full) / `retired` |
 | timestamps | | |
 
 Indexes: `(availability_id, status)`, `(starts_at)`.
@@ -98,6 +98,7 @@ Indexes: `(availability_id, status)`, `(starts_at)`.
 |---|---|---|
 | `id` | uuid pk | |
 | `slot_id` | fk → slots, **restrictOnDelete** | the FK is what enforces D3's "never delete a slot with bookings" |
+| `context_type` / `context_id` | nullableMorphs, indexed | the owning scope, **copied from the availability at creation** (or supplied for a direct booking) — D13 applied to tenancy, so every booking answers "whose is this?" without a join (ruled 2026-09-01) |
 | `booked_for_type` / `booked_for_id` | morphs | the subject |
 | `booked_by_type` / `booked_by_id` | morphs | the submitter |
 | `type` | string nullable, indexed | D13 |
@@ -119,6 +120,7 @@ Unique `(booking_id, host_type, host_id, role)`.
 |---|---|---|
 | `id` | uuid pk | |
 | `token` | string unique | ≥ 40 chars, `Str::random`; the only lookup key a link carries |
+| `context_type` / `context_id` | nullableMorphs, indexed | the owning scope, supplied at creation (an all-adhoc offer has no availability to inherit one from) |
 | `offered_to_type` / `offered_to_id` | morphs | only this party may accept |
 | `created_by_type` / `created_by_id` | nullableMorphs | |
 | `expires_at` | timestampTz nullable | |
@@ -142,8 +144,10 @@ each firing its event **after commit** (`DB::afterCommit`). Invalid state transi
 - **PublishAvailability**: `draft → published`; materializes slots. Generation: from `starts_at`, place
   a slot of `slot_duration_minutes`, advance by duration + padding, while slot end ≤ `ends_at`. Partial
   trailing time is unused. Idempotent (re-publish regenerates nothing if slots exist).
-- **Geometry edit after publish** (window/duration/padding change): delete all `open` slots, regenerate
-  the grid, skip any generated position that overlaps a surviving `booked`/`held` slot (D6).
+- **Geometry edit after publish** (window/duration/padding change): delete every `open` slot with no
+  booking rows; an `open` slot that carries a (cancelled) booking cannot be deleted (D3) and becomes
+  `retired` — history only, out of every listing, its grid position free; regenerate the grid, skipping
+  any position that overlaps a surviving `booked`/`held` slot (D6). Ruled 2026-09-01.
 - **CloseAvailability**: `published → closed`. Open slots remain rows but leave the `bookable` scope.
   Reopening (`closed → published`) is allowed.
 - **DuplicateAvailability**: copy geometry, type, name, location, pool — into a new `draft` at a
@@ -163,7 +167,7 @@ each firing its event **after commit** (`DB::afterCommit`). Invalid state transi
   5. Optional overlap guard (`guardHostOverlap: true`): if any pooled/assigned host has an overlapping
      active booking, throw `HostOverlap` (it is a query, not a solver — D8). The check helper
      (`OverlapCheck::for($host, $start, $end)`) is public API regardless.
-- **CreateDirectBooking(bookedFor, host(s), start, end, location, type, context?)**: adhoc slot
+- **CreateDirectBooking(bookedFor, bookedBy, spec, hosts, options{type, context, …})**: adhoc slot
   (created directly as `booked`) + booking + assignments, one transaction (D4).
 - **CancelBooking(booking, cancelledBy?, )**: `booked → cancelled`, stamp `cancelled_at`/`cancelled_by`;
   release the slot per D3 (availability-born future slot → `open` if not full; adhoc → survives as an
@@ -172,7 +176,7 @@ each firing its event **after commit** (`DB::afterCommit`). Invalid state transi
   allowed (both are post-hoc judgments); `cancelled` is terminal.
 
 ### 5.3 Offers
-- **CreateOffer(offeredTo, slots, expiresAt?, createdBy?, message?)**: `slots` is a mix of existing
+- **CreateOffer(offeredTo, slots, expiresAt?, createdBy?, message?, meta?, context?)**: `slots` is a mix of existing
   `open` capacity-1 slots (→ `held`) and adhoc slot specs (created as `held`). Generates the token.
 - **AcceptOffer(offer, chosenSlot, bookedBy?)**: refuse unless `pending`, unexpired (checked at call
   time even if no sweep ran), and the slot belongs to the offer. Book the chosen slot via the BookSlot
@@ -186,8 +190,9 @@ each firing its event **after commit** (`DB::afterCommit`). Invalid state transi
 
 ### 5.4 Query scopes (public API)
 `Availability::published()`, `Slot::bookable()` (open + published availability + future + notice/horizon
-satisfied), `Slot::upcoming()`, `Booking::active()` (status `booked`), `Booking::upcoming()`,
-`Offer::pending()` (status pending AND unexpired).
+satisfied), `Slot::upcoming()` (live, never retired), `Slot::retired()`, `Booking::active()` (status
+`booked`), `Booking::upcoming()`, `Offer::pending()` (status pending AND unexpired), and
+`forContext($model)` on `Availability`, `Booking` and `Offer`.
 
 ## 6. Events
 
@@ -260,6 +265,9 @@ per the `verification` skill before any "done" claim.
 | R37 | Test suite runs on real PostgreSQL via Testbench (taxon TestCase pattern); no SQLite anywhere | `tests/TestCase.php` (pgsql, per-worktree `testing_wt_<slug>`), `tests/Pest.php` | whole suite; `SchemaTest` asserts timestamptz/jsonb | Done |
 | R38 | `ddev composer quality` passes: Pint, PHPStan L8 zero-ignore, Rector check, full Pest suite | `composer quality` (`.githooks/pre-commit` runs it on every commit) | final run on `feature/v1` 2026-09-01: 231 passed / 631 assertions, PHPStan 0 errors, Rector clean | Done |
 | R39 | Factories exist for all models; states for each status | `database/factories/*Factory.php` | `tests/Feature/Foundation/FactoriesTest.php` | Done |
+| R40 | Bookings and offers carry `context`; `BookSlot` copies the availability's, direct bookings/offers take it as an argument; `forContext()` scopes on Availability/Booking/Offer | `Booking`/`Offer` context columns + `scopeForContext`; `BookingOptions::context` | `tests/Feature/Foundation/ContextTest.php` | In progress |
+| R41 | Regeneration retires (never deletes) an open slot that has booking rows; retired slots leave `bookable()` and `upcoming()`; their position is reused | `SlotStatus::Retired`, `Slot::retired()`, `scopeUpcoming` | `ScopesTest` retired cases | In progress |
+| R42 | `DeleteAvailability` / `UpdateAvailabilityGeometry` query slots through `Dibs::query()` so lock, check and delete run on the transaction's connection | | | In progress |
 
 ## 9a. Non-goals (explicit exclusions)
 

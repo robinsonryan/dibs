@@ -22,6 +22,7 @@ it('has a slot state for every status and origin', function (): void {
     expect(Slot::factory()->open()->create()->status)->toBe(SlotStatus::Open)
         ->and(Slot::factory()->held()->create()->status)->toBe(SlotStatus::Held)
         ->and(Slot::factory()->booked()->create()->status)->toBe(SlotStatus::Booked)
+        ->and(Slot::factory()->retired()->create()->status)->toBe(SlotStatus::Retired)
         ->and(Slot::factory()->adhoc()->create()->origin())->toBe(SlotOrigin::Adhoc)
         ->and(Slot::factory()->create()->origin())->toBe(SlotOrigin::Availability);
 });

@@ -98,6 +98,14 @@ final class OfferFactory extends Factory
         ]);
     }
 
+    public function forContext(Model $context): self
+    {
+        return $this->state(fn (): array => [
+            'context_type' => $context->getMorphClass(),
+            'context_id' => (string) $context->getKey(),
+        ]);
+    }
+
     public function expiresAt(?CarbonImmutable $expiresAt): self
     {
         return $this->state(fn (): array => ['expires_at' => $expiresAt]);

@@ -62,6 +62,11 @@ final class SlotFactory extends Factory
         return $this->state(fn (): array => ['status' => SlotStatus::Booked]);
     }
 
+    public function retired(): self
+    {
+        return $this->state(fn (): array => ['status' => SlotStatus::Retired]);
+    }
+
     public function at(CarbonImmutable $startsAt, int $minutes = 30): self
     {
         return $this->state(fn (): array => ['starts_at' => $startsAt, 'ends_at' => $startsAt->addMinutes($minutes)]);

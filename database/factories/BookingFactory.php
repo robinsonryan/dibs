@@ -95,6 +95,14 @@ final class BookingFactory extends Factory
         ]);
     }
 
+    public function forContext(Model $context): self
+    {
+        return $this->state(fn (): array => [
+            'context_type' => $context->getMorphClass(),
+            'context_id' => (string) $context->getKey(),
+        ]);
+    }
+
     public function type(?string $type): self
     {
         return $this->state(fn (): array => ['type' => $type]);

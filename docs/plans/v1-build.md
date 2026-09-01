@@ -32,6 +32,10 @@ Acceptance contract: `docs/SPEC.md` (ledger §9 is kept current there, not here)
 | B24 | `CreateOffer` clamps the token length to `max(40, config('dibs.token_length'))`. | A misconfigured consumer cannot weaken the only lookup key. |
 | B25 | `AdhocSlotSpec::ensureValid()` (end after start, start in the future) runs in `CreateOffer` and `CreateDirectBooking`; `CreateOffer` also refuses an `expiresAt` not after now. An invalid spec writes nothing. | An unbookable held slot only `WithdrawOffer` could free is worse than an early `InvalidArgumentException`. |
 | B26 | `ExpireOffers` isolates failures per offer and rethrows the first after the loop; successfully expired offers stay expired (own transactions). | A sweep that dies on the offer someone is accepting must not leave every other overdue offer pending. |
+| B27 | **Ryan, 2026-09-01:** keep extendable models + `final_internal_class`; the rule is ported to the harness canonical `pint.json` (harness `340cca2`); per-package rollout of the other seven copies is a `package-check` sweep item. | Decision 1 sign-off. |
+| B28 | **Ryan, 2026-09-01:** tenancy `context` is stamped on bookings (copied from the availability, or supplied) and on offers (supplied); `forContext()` scopes on Availability/Booking/Offer. Supersedes B18. | Direct appointments and all-adhoc offers had no path to a ward; ccstake is multi-org. |
+| B29 | **Ryan, 2026-09-01:** an open slot with cancelled-booking history displaced by a regeneration becomes `retired` (fourth slot state) rather than staying bookable at its old time. Supersedes B15's "survives and blocks its position". | Regular grid after reshape; history kept. |
+| B30 | Connection-pinning defect (QUEUE) fixed in the same follow-up: the two availability actions query slots via `Dibs::query(Slot::class)`. | Ryan chose fix-now. |
 | B13 | Concurrency-safe slot fullness: BookSlot counts active bookings under the row lock rather than trusting `status`. | `status` is a derived cache; the lock + count is the truth. |
 
 ## Module ownership (disjoint)

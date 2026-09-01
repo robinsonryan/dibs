@@ -118,6 +118,19 @@ class Availability extends Model
         return $query->where($this->qualifyColumn('status'), AvailabilityStatus::Published->value);
     }
 
+    /**
+     * Records owned by the given context (tenant / organisation).
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeForContext(Builder $query, Model $context): Builder
+    {
+        return $query
+            ->where($this->qualifyColumn('context_type'), $context->getMorphClass())
+            ->where($this->qualifyColumn('context_id'), (string) $context->getKey());
+    }
+
     public function isPublished(): bool
     {
         return $this->status === AvailabilityStatus::Published;

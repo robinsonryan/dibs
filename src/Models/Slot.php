@@ -180,14 +180,27 @@ class Slot extends Model
     }
 
     /**
-     * Any slot starting after `$now`, regardless of status.
+     * Any live slot starting after `$now` (open, held or booked — never retired).
      *
      * @param  Builder<static>  $query
      * @return Builder<static>
      */
     public function scopeUpcoming(Builder $query, ?CarbonInterface $now = null): Builder
     {
-        return $query->where($this->qualifyColumn('starts_at'), '>', self::instant($now));
+        return $query
+            ->where($this->qualifyColumn('status'), '!=', SlotStatus::Retired->value)
+            ->where($this->qualifyColumn('starts_at'), '>', self::instant($now));
+    }
+
+    /**
+     * Slots displaced by a grid regeneration that survive only as history.
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeRetired(Builder $query): Builder
+    {
+        return $query->where($this->qualifyColumn('status'), SlotStatus::Retired->value);
     }
 
     /**
