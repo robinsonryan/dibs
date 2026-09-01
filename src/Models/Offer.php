@@ -46,6 +46,7 @@ class Offer extends Model
 
     /** @use HasFactory<OfferFactory> */
     use HasFactory;
+
     use HasUuidPrimaryKey;
 
     protected $guarded = [];

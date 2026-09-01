@@ -46,6 +46,7 @@ class Booking extends Model
 
     /** @use HasFactory<BookingFactory> */
     use HasFactory;
+
     use HasUuidPrimaryKey;
 
     protected $guarded = [];

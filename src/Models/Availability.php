@@ -43,6 +43,7 @@ class Availability extends Model
 
     /** @use HasFactory<AvailabilityFactory> */
     use HasFactory;
+
     use HasUuidPrimaryKey;
 
     protected $guarded = [];
