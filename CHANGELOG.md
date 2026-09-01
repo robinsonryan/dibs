@@ -58,10 +58,15 @@ Behavior changes land here in the commit that makes them, not at tag time.
   availability at booking time, or supplied for a direct booking) and on offers
   (supplied), with `forContext($model)` scopes on `Availability`, `Booking` and
   `Offer`.
-- Slot state `retired`: an open slot carrying cancelled-booking history that a
-  grid regeneration displaces is retired (history kept, out of `bookable()` and
-  `upcoming()`, position reused) instead of staying bookable off-pattern.
-  `Slot::retired()` scope.
+- Slot state `retired`: a grid regeneration retires a displaced open slot whose
+  bookings are all history (cancelled / completed / no-show) — history kept, out
+  of `bookable()` and `upcoming()`, position reused — instead of leaving it
+  bookable off-pattern. A partly-full slot with a live claim survives untouched
+  and keeps its position. `Slot::retired()` scope; `ReleaseSlot` treats retired
+  as terminal.
+- `DeleteAvailability` locks the availability row and its slots before deciding,
+  and both it and `UpdateAvailabilityGeometry` issue every slot statement on the
+  transaction's connection even when handed a model pinned to another one.
 
 ### Changed
 

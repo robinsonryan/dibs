@@ -65,7 +65,7 @@ Worktrees: `.claude/worktrees/<mod>` on branches `feature/<mod>`; test DB per tr
 ## Status (2026-09-01)
 
 All four waves complete. Final gate on `feature/v1`: Pint 109 files, PHPStan L8 zero-ignore, Rector clean,
-Pest **231 passed / 631 assertions** (10 two-connection concurrency tests). Every review finding fixed
+Pest **253 passed / 701 assertions** after the 2026-09-01 follow-up (context, retired, connection fix). Every review finding fixed
 with a mutation-verified test (`docs/plans/reviews/*.md`). Worktrees and `testing_wt_*` databases torn down.
 
 ## Review findings
