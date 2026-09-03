@@ -13,7 +13,6 @@ use RobinsonRyan\Dibs\Enums\SeriesStatus;
 use RobinsonRyan\Dibs\Events\SeriesMaterialised;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Series;
-use RobinsonRyan\Dibs\Models\SeriesWindow;
 use RobinsonRyan\Dibs\Support\Dibs;
 use RobinsonRyan\Dibs\Support\SeriesClock;
 
@@ -71,7 +70,7 @@ final class MaterialiseSeries
                 return 0;
             }
 
-            $blocks = $this->blocksByWeekday($locked);
+            $blocks = $locked->blocks();
             $taken = $this->existingKeys($locked, $dates);
 
             /** @var Collection<int, Availability> $created */
@@ -140,24 +139,6 @@ final class MaterialiseSeries
         }
 
         return (new PublishAvailability)($availability);
-    }
-
-    /**
-     * The series' windows grouped by weekday and put in clock order, so a
-     * block's index is the position it occupies in that day — stable across
-     * runs, and the thing the occurrence key is built on.
-     *
-     * @return array<int, list<SeriesWindow>>
-     */
-    private function blocksByWeekday(Series $series): array
-    {
-        $blocks = [];
-
-        foreach ($series->windows->sortBy('starts_at_minutes') as $window) {
-            $blocks[$window->weekday][] = $window;
-        }
-
-        return $blocks;
     }
 
     /**

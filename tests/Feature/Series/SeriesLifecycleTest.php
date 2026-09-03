@@ -12,10 +12,12 @@ use RobinsonRyan\Dibs\Actions\ExpireOffers;
 use RobinsonRyan\Dibs\Actions\FollowSeries;
 use RobinsonRyan\Dibs\Actions\MaterialiseSeries;
 use RobinsonRyan\Dibs\Actions\PauseSeries;
+use RobinsonRyan\Dibs\Actions\RemoveOccurrenceWindow;
 use RobinsonRyan\Dibs\Actions\ResumeSeries;
 use RobinsonRyan\Dibs\Actions\SweepSeries;
 use RobinsonRyan\Dibs\Actions\UpdateSeries;
 use RobinsonRyan\Dibs\Data\WindowSpec;
+use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\OfferStatus;
 use RobinsonRyan\Dibs\Enums\SeriesStatus;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
@@ -336,4 +338,38 @@ it('puts a detached day back under a paused rule without making it disappear', f
     expect($remade->id)->not->toBe($day->id)
         ->and($remade->rule_version)->toBe(2)
         ->and($remade->starts_at->setTimezone('America/Denver')->format('H:i'))->toBe('09:00');
+});
+
+it('keeps a removed window empty through the sweep, a pause and a resume', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)], horizon: 21);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-15'));
+
+    $day = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail();
+
+    $removed = (new RemoveOccurrenceWindow)($day);
+
+    expect($removed->status)->toBe(AvailabilityStatus::Closed)
+        ->and($removed->isDetached())->toBeTrue()
+        ->and($removed->slots()->where('status', SlotStatus::Open->value)->count())->toBe(0)
+        ->and(Slot::upcoming()->where('availability_id', $day->id)->count())->toBe(0)
+        ->and(Slot::bookable()->where('availability_id', $day->id)->count())->toBe(0);
+
+    // The key stays occupied, so nothing lays the day down again: not the
+    // sweep, not an edit, not a pause and resume.
+    (new SweepSeries)();
+    (new UpdateSeries)($series, editedSpec($series, [new WindowSpec(0, 9 * 60, 11 * 60)], horizon: 21));
+    (new PauseSeries)($series->fresh());
+    (new ResumeSeries)($series->fresh());
+
+    expect($series->occurrences()->where('occurs_on', '2026-03-08')->count())->toBe(1)
+        ->and($day->fresh()?->status)->toBe(AvailabilityStatus::Closed)
+        ->and(Slot::upcoming()->where('availability_id', $day->id)->count())->toBe(0)
+        ->and(Slot::bookable()->where('availability_id', $day->id)->count())->toBe(0);
+});
+
+it('refuses to remove the window of a day that belongs to no series', function (): void {
+    $loose = Availability::factory()->published()->create();
+
+    expect(fn (): Availability => (new RemoveOccurrenceWindow)($loose))
+        ->toThrow(InvalidSeries::class);
 });

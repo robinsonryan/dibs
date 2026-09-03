@@ -7,6 +7,7 @@ namespace RobinsonRyan\Dibs\Actions;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
+use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\SeriesStatus;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Events\SeriesResumed;
@@ -74,8 +75,14 @@ final class ResumeSeries
     {
         SlotStatusSweep::reopen(
             Dibs::query(Slot::class)
+                // Days that are still published: a closed day offers nothing,
+                // whether it was closed by hand or by `RemoveOccurrenceWindow`
+                // to say this block does not happen on this date, and resuming
+                // the rule is not a reason to put its old times back in
+                // `Slot::upcoming()`.
                 ->whereIn('availability_id', Dibs::query(Availability::class)
                     ->where('series_id', $series->getKey())
+                    ->where('status', AvailabilityStatus::Published->value)
                     ->select('id'))
                 ->where('status', SlotStatus::Retired->value)
                 ->where('starts_at', '>', Slot::instant(null))

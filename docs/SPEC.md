@@ -325,14 +325,22 @@ exclusive hosts it reports what is *left*.
   stamped on every occurrence and every copy of the pool and this action rewrites neither
   — accepting it left one rule with days in two tenants. Moving a rule between tenants
   means creating it in the new one.
-- **RegenerateSeries(Series)** — remakes every future, following occurrence still on an
-  older version, then materialises out to `max_horizon_days` (90 days when null). It will
-  not touch the past, a detached occurrence, or one carrying a **live claim** — a booking,
-  or a slot a pending offer is holding. The deletion of a clean day goes through
-  `DeleteAvailability`, so the held-slot refusal every other caller meets applies here too
-  and a refusal simply leaves the day standing on its old version. A day left standing is
-  caught up by the next edit, or by the nightly `SweepSeries`, which regenerates as well
-  as materialises. One whose bookings are all spent is *released* (D16) rather than
+- **RegenerateSeries(Series, `$through = null`)** — remakes every future, following
+  occurrence still on an older version, then materialises out to `$through` or, when the
+  caller names none, `max_horizon_days` (90 days when null). It will not touch the past or
+  a detached occurrence. A day carrying a **live claim** — a booking, or a slot a pending
+  offer is holding — is never deleted; it is **reshaped in place** when the new rule still
+  opens that date and that block and every claimed time still falls inside the new hours:
+  `UpdateAvailabilityGeometry` moves the window (open times regenerated around the claimed
+  ones, which keep their rows and ids), the day's pool and the things it carries are
+  brought into line, and it is stamped with the current `rule_version`. Widening 6–8 to
+  6–9 around an appointment therefore opens the extra hour rather than leaving the day
+  behind with nothing to say so. Where a claim would not survive the move, the day is left
+  standing on its old version for the consumer to settle (`FindSeriesConflicts`). The
+  deletion of a clean day goes through `DeleteAvailability`, so the held-slot refusal every
+  other caller meets applies here too and a refusal simply leaves the day standing. A day
+  left standing is caught up by the next edit, or by the nightly `SweepSeries`, which
+  regenerates as well as materialises. One whose bookings are all spent is *released* (D16) rather than
   deleted: closed, its remaining open slots **retired** (so it leaves `Slot::upcoming()`
   as well as `bookable()`, and republishing cannot revive the old grid — `PublishAvailability`
   only ever generates slots for an availability that has none), cut loose from the series,
@@ -355,6 +363,14 @@ exclusive hosts it reports what is *left*.
   `$through` or, when the caller names none, the same horizon `RegenerateSeries` and
   `SweepSeries` derive. Lock-then-set is one helper, `Support\SlotStatusSweep`, shared by
   pause, resume, the sweep and the released-day retirement.
+- **RemoveOccurrenceWindow(Availability)** — "this block does not happen on this date",
+  and it stays not happening. The day is closed, its unclaimed times retired (so it leaves
+  `bookable()` **and** `Slot::upcoming()`) and detached — which keeps its occurrence key
+  occupied, and that is the point: deleting the day would free the key and the next sweep
+  would simply lay it down again. Regeneration passes it by (detached), materialisation
+  finds the key taken, and resume does not bring its times back, because resume only
+  reopens the times of days that are still **published**. Appointments already made stand
+  (D6); a consumer that means to cancel them says so first. `FollowSeries` is the way back.
 - **DetachOccurrence / FollowSeries(Availability)** — take one day out of the rule's
   hands and put it back. Following marks the day stale and lets `RegenerateSeries` do the
   work, so exactly one code path remakes a day. On a **paused or ended** series it
@@ -492,6 +508,8 @@ per the `verification` skill before any "done" claim.
 | R76 | `UpdateSeries` refuses a context change with `InvalidSeries` reason `context.immutable`, before anything is written | `Actions\UpdateSeries::assertContextIsUnchanged()` | `UpdateSeriesTest` "refuses to move a series into another context rather than half-applying it" | Done |
 | R77 | `FindSeriesConflicts` judges "still fits" by `(date, window_index)` — the key regeneration uses — so merging or splitting blocks reports the bookings the regeneration would strand, and a block that keeps its index and still covers its time is not a conflict | `Actions\FindSeriesConflicts::stillFits()`, `::blocksByWeekday()` | `UpdateSeriesTest` merged-block and moved-block cases (merged case red before the fix) | Done |
 | R78 | `SeriesSpec` refuses an unknown timezone (`timezone.invalid`) and an ordinal outside {1,2,3,4,5,-1} (`ordinals.bounds`); `ordinals()` stores each ordinal once, in order | `Data\SeriesSpec`, `Exceptions\InvalidSeries` | `SeriesSpecTest` timezone / ordinal-bounds / dedupe cases | Done |
+| R82 | A stale future day carrying a live claim is **reshaped in place** — `UpdateAvailabilityGeometry` to the rule's window (same duration/padding), pool and carried fields resynced, stamped with the current `rule_version` — whenever the rule still opens that date and block and every claimed time still falls inside the new hours; otherwise it is left standing exactly as before | `Actions\RegenerateSeries::reshape()`, `Models\Series::blocks()` | `UpdateSeriesTest` "reshapes a booked day in place when the new hours still cover the appointment", "brings a reshaped day's pool and its details onto the new rule", "still leaves a booked day alone when the new hours would strand the appointment" | Done |
+| R83 | `RemoveOccurrenceWindow(Availability)` closes, retires and detaches one occurrence so the block does not happen on that date and stays that way — the occurrence key stays occupied, so no sweep, edit, pause or resume lays it down again; refuses an availability that belongs to no series | `Actions\RemoveOccurrenceWindow`, `Actions\ResumeSeries` (reopens only published days) | `SeriesLifecycleTest` "keeps a removed window empty through the sweep, a pause and a resume", "refuses to remove the window of a day that belongs to no series" | Done |
 | R81 | The resolver is asked once per distinct `(entry, context, availability date)` within one `bookable(requireFreeHost:)` / `capacityFor()` / `freeHolders()` call, however many pool rows, roles, blocks and slots name it; nothing is memoised across calls | `Support\HostResolution`, `Slot::resolvedPool()`, `Support\HostAvailability::resolvePool()` | `BookableFreeHostTest` "asks the resolver once per pooled position per availability date" and "…once for a position a slot pools twice", both with a **counting** resolver (red without the memo) | Done |
 | R79 | A window that converts to a zero-length or inverted instant on a date (a daylight-saving spring-forward gap) is skipped for that date, with no exception and no effect on any other date or block | `Actions\MaterialiseSeries` | `MaterialiseSeriesTest` "skips only the date where a daylight-saving jump swallows the window" | Done |
 | R80 | `FollowSeries` on a paused or ended series re-attaches the day and regenerates nothing, so the day cannot vanish; `ResumeSeries` regenerates, so it is remade on resume | `Actions\FollowSeries`, `Actions\ResumeSeries` | `SeriesLifecycleTest` "puts a detached day back under a paused rule without making it disappear" | Done |

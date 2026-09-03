@@ -225,6 +225,7 @@ keep working on rows.
 ```php
 use RobinsonRyan\Dibs\Actions\{CreateSeries, MaterialiseSeries, UpdateSeries, FindSeriesConflicts};
 use RobinsonRyan\Dibs\Actions\{PauseSeries, ResumeSeries, DetachOccurrence, FollowSeries, DeleteSeries, SweepSeries};
+use RobinsonRyan\Dibs\Actions\RemoveOccurrenceWindow;
 use RobinsonRyan\Dibs\Data\{SeriesSpec, WindowSpec, HostAssignment};
 use RobinsonRyan\Dibs\Enums\Cadence;
 
@@ -269,6 +270,7 @@ $conflicts = (new FindSeriesConflicts)($series, $proposed);   // live future boo
 $series = (new UpdateSeries)($series, $proposed);             // bumps rule_version and regenerates
 
 (new DetachOccurrence)($oneDay);      // "change just this day" — the rule stops managing it
+(new RemoveOccurrenceWindow)($oneDay);// "...and this one does not happen at all"
 (new FollowSeries)($oneDay);          // ...and back again
 
 (new PauseSeries)($series);                                   // retires unclaimed future times, keeps booked ones
@@ -283,6 +285,18 @@ Those are promises to a person, so you settle them first; the day is caught up b
 edit or by the nightly sweep. A day whose bookings are all *spent* cannot be deleted
 (bookings are history) and is **released** instead: closed, its remaining times retired,
 and cut loose from the series.
+
+A day carrying an appointment is never deleted, but it is not simply skipped either: if the
+new rule still opens that date and that block and the appointment still falls inside the new
+hours, the day is **reshaped in place** — the window moves, the open times are regenerated
+around the booked one, which keeps its row and its id. Widen 6–8 to 6–9 and that evening
+gains the extra hour like every other. Only a day whose appointment the move would strand is
+left standing for you to settle.
+
+`RemoveOccurrenceWindow` says "this block does not happen on this date" and makes it stick:
+the day is closed, its unclaimed times retired and the day detached, so its place in the rule
+stays taken and no sweep, pause or resume lays it down again. Deleting it would have freed
+that place and the next sweep would have made it afresh.
 
 `FindSeriesConflicts` asks "would the new rule still open this appointment's time?" the way
 the regeneration asks it — by **block**, not just by hour. Merge two evening blocks into one

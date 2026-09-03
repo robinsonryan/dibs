@@ -204,6 +204,26 @@ class Series extends Model
     }
 
     /**
+     * The rule's blocks grouped by weekday and put in clock order, so a block's
+     * position in its day **is** its `window_index` — the second half of the
+     * occurrence key `(series_id, occurs_on, window_index)`. Materialisation
+     * lays them down in this order and regeneration reads them back in it, so
+     * the two cannot disagree about which block is which.
+     *
+     * @return array<int, list<SeriesWindow>>
+     */
+    public function blocks(): array
+    {
+        $blocks = [];
+
+        foreach ($this->windows->sortBy('starts_at_minutes') as $window) {
+            $blocks[$window->weekday][] = $window;
+        }
+
+        return $blocks;
+    }
+
+    /**
      * The Sunday-based week the date falls in, counted from the week containing
      * `starts_on` — 0 for the start week, 1 for the next, and so on. Both sides
      * are plain UTC midnights, so the subtraction is exact whole days.

@@ -31,6 +31,19 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Changed
 
+- **A booked day the new hours still cover is reshaped in place** instead of
+  being left behind. Regeneration would not touch a day carrying a live claim at
+  all, so widening 6–8 to 6–9 left that day at 6–8, on the old `rule_version`,
+  with nothing to say it had been passed over. Where the rule still opens the
+  date and the block, and every booked or held time still falls inside the new
+  hours, the day's window now moves through `UpdateAvailabilityGeometry` — open
+  times regenerated around the claimed ones, which keep their rows and their ids
+  — its pool and carried details are brought into line, and it is stamped with
+  the current version. Where a claim would not survive the move, the day is left
+  standing exactly as before, for the consumer to settle first.
+- **`ResumeSeries` reopens only the times of days that are still published.** A
+  day closed by hand, or by `RemoveOccurrenceWindow`, no longer has its retired
+  times put back into `Slot::upcoming()` when the rule resumes.
 - **The `HostResolver` is asked far less often, and the docs say how often.** It
   was called once per pool row per reachable availability: sixteen days times
   three pooled positions was 48 calls for one
@@ -104,6 +117,15 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Added
 
+- **`Actions\RemoveOccurrenceWindow(Availability): Availability`** — "this block
+  does not happen on this date", made to stick. It closes the day, retires its
+  unclaimed times and detaches it, which keeps the occurrence key occupied;
+  deleting the day would have freed the key and the next sweep would simply have
+  laid it down again. Appointments already made stand — closing is not
+  cancelling (D6). `FollowSeries` is the way back.
+- `Models\Series::blocks()` — the rule's windows grouped by weekday in clock
+  order, where a block's position **is** its `window_index`. Materialisation and
+  regeneration now read the same method instead of grouping separately.
 - `Support\HostResolution` — the memo that holds the resolver's call volume down,
   and the honest statement of it.
 - `InvalidSeries` reasons `timezone.invalid`, `ordinals.bounds` and

@@ -338,3 +338,73 @@ it('leaves a booking alone when its block keeps its place and still covers it', 
 
     expect($conflicts)->toHaveCount(0);
 });
+
+it('reshapes a booked day in place when the new hours still cover the appointment', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-08'));
+
+    $day = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail();
+    $booking = bookFirstSlotOf($day);
+    $booked = $booking->slot;
+
+    expect($day->slots()->count())->toBe(4);
+
+    // The evening runs an hour later. The appointment at 6 is untouched, so
+    // there is nothing to settle first.
+    (new UpdateSeries)($series, editedSpec($series, [new WindowSpec(0, 18 * 60, 21 * 60)], horizon: 21));
+
+    $reshaped = $day->fresh();
+
+    expect($reshaped?->id)->toBe($day->id)
+        ->and($reshaped?->rule_version)->toBe(2)
+        ->and($reshaped?->ends_at->setTimezone('America/Denver')->format('H:i'))->toBe('21:00')
+        ->and($reshaped?->slots()->count())->toBe(6)
+        // The claimed time keeps its row, its id and its hour.
+        ->and($booked?->fresh()?->id)->toBe($booked?->id)
+        ->and($booked?->fresh()?->starts_at->equalTo($booked->starts_at))->toBeTrue()
+        ->and($booking->fresh()?->slot_id)->toBe($booked?->id)
+        // ...and the hour the widening opened is laid down beside it.
+        ->and($reshaped?->slots()->orderBy('starts_at')->get()
+            ->map(fn (Slot $slot): string => $slot->starts_at->setTimezone('America/Denver')->format('H:i'))->all())
+        ->toBe(['18:00', '18:30', '19:00', '19:30', '20:00', '20:30'])
+        ->and($series->occurrences()->where('occurs_on', '2026-03-08')->count())->toBe(1);
+});
+
+it('brings a reshaped day\'s pool and its details onto the new rule', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-08'));
+
+    $day = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail();
+    bookFirstSlotOf($day);
+
+    $counselor = user('Counselor');
+
+    (new UpdateSeries)($series, editedSpec(
+        $series,
+        [new WindowSpec(0, 18 * 60, 21 * 60)],
+        title: 'Sunday evenings with the counselor',
+        host: $counselor,
+        horizon: 21,
+    ));
+
+    $reshaped = $day->fresh();
+
+    expect($reshaped?->name)->toBe('Sunday evenings with the counselor')
+        ->and($reshaped?->hosts()->pluck('host_id')->all())->toBe([(string) $counselor->getKey()]);
+});
+
+it('still leaves a booked day alone when the new hours would strand the appointment', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-08'));
+
+    $day = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail();
+    $booking = bookFirstSlotOf($day);
+
+    (new UpdateSeries)($series, editedSpec($series, [new WindowSpec(0, 9 * 60, 11 * 60)], horizon: 21));
+
+    $standing = $day->fresh();
+
+    expect($standing?->rule_version)->toBe(1)
+        ->and($standing?->starts_at->setTimezone('America/Denver')->format('H:i'))->toBe('18:00')
+        ->and($booking->fresh()?->slot_id)->toBe($booking->slot_id);
+});

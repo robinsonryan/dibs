@@ -10,11 +10,13 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
+use RobinsonRyan\Dibs\Data\AvailabilityGeometry;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Exceptions\DeletionRefused;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Series;
+use RobinsonRyan\Dibs\Models\SeriesWindow;
 use RobinsonRyan\Dibs\Models\Slot;
 use RobinsonRyan\Dibs\Support\Dibs;
 use RobinsonRyan\Dibs\Support\SeriesClock;
@@ -28,14 +30,28 @@ use RobinsonRyan\Dibs\Support\SlotStatusSweep;
  * day still stamped with an older version is simply remade — which is both
  * simpler than working out what changed and impossible to get subtly wrong.
  *
- * Three things it will not do. It does not touch the past: a day that has
- * happened is a record, not a plan. It does not touch a detached day: somebody
- * edited that one deliberately. And it does not touch a day carrying a **live
- * claim** — a booking, or a held slot an offer is waiting on. Both are promises
- * to a person, so the consumer settles those first (`FindSeriesConflicts`, then
- * cancel or `ReparentSlotAsAdhoc`; withdraw or let the offer lapse) and the day
- * is caught up afterwards, by the next edit or by the nightly `SweepSeries`,
- * which regenerates as well as materialises for exactly this reason.
+ * Two things it will not do. It does not touch the past: a day that has
+ * happened is a record, not a plan. And it does not touch a detached day:
+ * somebody edited that one deliberately.
+ *
+ * A day carrying a **live claim** — a booking, or a held slot an offer is
+ * waiting on — is never deleted, because a claim is a promise to a person. It
+ * is not simply skipped either: if the new rule still opens that date and that
+ * block, and every claimed time still falls inside the new hours, the day is
+ * **reshaped in place** — `UpdateAvailabilityGeometry` moves its window to the
+ * rule's, regenerating the open times around the claimed ones, which keep their
+ * rows and their ids — and stamped with the current version, its pool and the
+ * things it carries brought into line. Widening 6–8 to 6–9 around an
+ * appointment therefore opens the extra hour, instead of leaving the day at 6–8
+ * with nothing to say it was left behind.
+ *
+ * Where the claim would not survive the move — the rule no longer opens that
+ * date or that block, or a booked time now falls outside the hours — the day is
+ * left standing on its old version, exactly as before. The consumer settles
+ * those first (`FindSeriesConflicts`, then cancel or `ReparentSlotAsAdhoc`;
+ * withdraw or let the offer lapse), and the day is caught up by the next edit
+ * or by the nightly `SweepSeries`, which regenerates as well as materialises
+ * for exactly this reason.
  *
  * The held case was a hole until 2026-09-03: a day whose only claim was a
  * pending offer looked clean, was deleted, and `dibs_offer_slots` cascaded — the
@@ -114,9 +130,13 @@ final class RegenerateSeries
         foreach ($stale as $occurrence) {
             $id = (string) $occurrence->getKey();
 
-            // A booking or a pending offer is a live claim: the day stands as
-            // it is, on its old version, until the claim is settled.
+            // A booking or a pending offer is a live claim: the day is never
+            // deleted. It is remade in place where the new rule still covers
+            // every claim, and left standing on its old version where it does
+            // not — until the consumer settles the claim.
             if (isset($live[$id]) || isset($held[$id])) {
+                $this->reshape($series, $occurrence);
+
                 continue;
             }
 
@@ -134,6 +154,120 @@ final class RegenerateSeries
                 // on the next regeneration, exactly as a held day found up
                 // front is.
             }
+        }
+    }
+
+    /**
+     * Bring a claimed day onto the current rule without disturbing the claim.
+     *
+     * Refused — and the day simply left as it is — when the rule no longer opens
+     * that date or has no block at that day's index, when the hours are a
+     * daylight-saving gap on that date, or when a claimed time would end up
+     * outside the new window. `UpdateAvailabilityGeometry` would keep such a
+     * slot (D6, held and booked slots always stand), but a day whose 7 pm
+     * appointment sits outside its own 9-to-11 window is not a day that follows
+     * the rule, and stamping it with the current version would say it was.
+     */
+    private function reshape(Series $series, Availability $occurrence): void
+    {
+        $date = $occurrence->occurs_on;
+        $index = $occurrence->window_index;
+
+        if (! $date instanceof CarbonImmutable || $index === null || ! $series->occursOn($date)) {
+            return;
+        }
+
+        $window = $series->blocks()[$date->dayOfWeek][$index] ?? null;
+
+        if (! $window instanceof SeriesWindow) {
+            return;
+        }
+
+        $opens = SeriesClock::instantOn($date, $window->starts_at_minutes, $series->timezone);
+        $closes = SeriesClock::instantOn($date, $window->ends_at_minutes, $series->timezone);
+
+        if ($closes->lessThanOrEqualTo($opens) || ! $this->claimsFitInside($occurrence, $opens, $closes)) {
+            return;
+        }
+
+        $reshaped = (new UpdateAvailabilityGeometry)($occurrence, new AvailabilityGeometry(
+            $opens,
+            $closes,
+            $series->slot_duration_minutes,
+            $series->slot_padding_minutes,
+        ));
+
+        $this->syncPool($series, $reshaped);
+
+        // Everything a day carries comes from the rule too, so the stamp is
+        // honest: this day is now this version of the rule, not just its hours.
+        $reshaped->forceFill([
+            'name' => $series->title,
+            'location' => $series->location,
+            'meta' => $series->meta,
+            'min_notice_minutes' => $series->min_notice_minutes,
+            'max_horizon_days' => $series->max_horizon_days,
+            'rule_version' => $series->rule_version,
+        ])->save();
+    }
+
+    /**
+     * Would every claimed time on this day still fall inside the new hours?
+     * Held slots count: an offer somebody is deciding on is as much a promise
+     * as a booking.
+     */
+    private function claimsFitInside(Availability $occurrence, CarbonImmutable $opens, CarbonImmutable $closes): bool
+    {
+        $claimed = Dibs::query(Slot::class)
+            ->where('availability_id', $occurrence->getKey())
+            ->where(static function (Builder $slots): void {
+                $slots
+                    ->where(Dibs::make(Slot::class)->qualifyColumn('status'), SlotStatus::Held->value)
+                    ->orHas('activeBookings');
+            })
+            ->get();
+
+        foreach ($claimed as $slot) {
+            if ($slot->starts_at->lessThan($opens) || $slot->ends_at->greaterThan($closes)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * The day's copy of the pool, brought back into line with the rule's.
+     * Assignments already made on a booking are a different table and are never
+     * touched: who is conducting an appointment somebody has is not a detail of
+     * the rule.
+     */
+    private function syncPool(Series $series, Availability $occurrence): void
+    {
+        $wanted = [];
+
+        foreach ($series->hosts as $host) {
+            $wanted[implode('|', [$host->host_type, $host->host_id, $host->role])] = $host;
+        }
+
+        foreach ($occurrence->hosts()->get() as $pooled) {
+            $key = implode('|', [$pooled->host_type, $pooled->host_id, $pooled->role]);
+
+            if (isset($wanted[$key])) {
+                unset($wanted[$key]);
+
+                continue;
+            }
+
+            $pooled->delete();
+        }
+
+        foreach ($wanted as $host) {
+            $occurrence->hosts()->create([
+                'host_type' => $host->host_type,
+                'host_id' => $host->host_id,
+                'role' => $host->role,
+            ]);
         }
     }
 
