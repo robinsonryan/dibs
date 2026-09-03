@@ -51,6 +51,7 @@ There is deliberately no timezone, permission or notification configuration.
 | One bookable time | `Slot` | `open`, `held`, `booked` (= full), `retired` (history only) |
 | The claim on a slot | `Booking` | `booked` → `completed` ⇄ `no_show`, or → `cancelled` (terminal) |
 | A tokenized multi-slot invitation | `Offer` | `pending` → `accepted` / `expired` / `withdrawn` |
+| A repeating rule that makes availabilities | `Series` (+ `SeriesWindow`, `SeriesHost`) | `active` ⇄ `paused`, → `ended` |
 | Who fulfils a booking | any of your models, attached as a **host** with a `role` | pool on the availability, assignment on the booking |
 | Who the booking is for / who submitted it | `bookedFor` / `bookedBy` (your models) | equal unless booked on someone's behalf |
 
@@ -176,9 +177,17 @@ HostAvailability::isFree($bishop, $from, $until, $booking); // ...ignoring one b
 // which is how you ask "would he be free if we moved this one?"
 
 HostAvailability::freeHosts($availability, $slot, 'interviewer');
-// the pool members for that role with nothing else booked across the slot,
-// returned as your own host models, in pool order
+// the people the pool for that role stands for with nothing else booked across
+// the slot, returned as your own host models, in pool order
+
+HostAvailability::freeHolders($availability, $slot);
+// the same across the whole pool, whatever role each entry fills
 ```
+
+`freeHosts` and `freeHolders` put every pool entry through the bound `HostResolver`
+first (see *Pools that stand for people*), and count a person two entries both stand
+for once. `busyBookings` and `isFree` resolve nothing — they ask about a host that is
+already concrete.
 
 Intervals are half-open: a booking that ends exactly when the next one starts does not
 conflict. A booking on the slot being asked about never counts against its own host —
@@ -191,11 +200,116 @@ The same question, asked of a whole list of slots:
 Slot::bookable(requireFreeHost: true)->get();
 ```
 
-A slot now also drops out when its availability has a host pool and **none** of that
-pool is free across it — what a member should be offered, as against what a leader may
-book into. An availability with no pool is never excluded (nobody to be busy), it is one
-SQL statement however many slots you ask about, and the flag is off by default, so
-`bookable()` on its own is unchanged.
+A slot now also drops out when its availability has a host pool and **nobody that pool
+resolves to** is free across it — what a member should be offered, as against what a
+leader may book into. An availability with no pool is never excluded (nobody to be busy),
+and the flag is off by default, so `bookable()` on its own is unchanged. Because SQL
+cannot call PHP, the pools in play are resolved before the filter runs; the number of
+queries is fixed and does not grow with the number of slots.
+
+### Repeating times
+
+A `Series` is a rule — which weekdays, which hours of them, how often, between which
+dates — and `MaterialiseSeries` lays it down as ordinary availabilities. Nothing else in
+the package learns what a series is: booking, offers, the overlap guard and deletion all
+keep working on rows.
+
+```php
+use RobinsonRyan\Dibs\Actions\{CreateSeries, MaterialiseSeries, UpdateSeries, FindSeriesConflicts};
+use RobinsonRyan\Dibs\Actions\{PauseSeries, ResumeSeries, DetachOccurrence, FollowSeries, DeleteSeries, SweepSeries};
+use RobinsonRyan\Dibs\Data\{SeriesSpec, WindowSpec, HostAssignment};
+use RobinsonRyan\Dibs\Enums\Cadence;
+
+$series = (new CreateSeries)(new SeriesSpec(
+    title: 'Tuesday and Thursday evenings',
+    context: $ward,
+    timezone: 'America/Denver',        // the clock the windows below are written in
+    cadence: Cadence::Weekly,          // Fortnightly · MonthlyOrdinal · Once
+    ordinals: [],                      // [1, 3] or [-1] — monthly-ordinal only
+    startsOn: CarbonImmutable::parse('2026-09-06'),
+    endsOn: null,
+    slotDurationMinutes: 15,
+    slotPaddingMinutes: 5,
+    minNoticeMinutes: 60,
+    maxHorizonDays: 30,
+    location: "Bishop's office",
+    windows: [
+        new WindowSpec(2, 18 * 60, 20 * 60),   // Tuesday, 6–8 pm local
+        new WindowSpec(4, 18 * 60, 20 * 60),   // Thursday, the same
+    ],
+    hosts: [new HostAssignment($bishop, 'interviewer')],
+    meta: ['purposes' => ['temple-recommend']],
+));
+
+(new MaterialiseSeries)($series, now()->addDays(30)->toImmutable());   // creates the days; fires SeriesMaterialised
+```
+
+Creating and materialising are separate on purpose: recording the rule and deciding how
+far ahead to open times are different decisions.
+
+Windows are **wall clock** — minutes from local midnight in the series' own timezone — so
+6 pm stays 6 pm across a daylight-saving change. Everything stored is still a UTC instant;
+`Support\SeriesClock` is the only place the package reads a clock at all.
+
+An occurrence is keyed `(series_id, occurs_on, window_index)`, which is what makes
+materialisation idempotent: a key that already has a row is skipped, whatever state that
+row is in. Two blocks on one weekday are two occurrences on that date.
+
+```php
+$conflicts = (new FindSeriesConflicts)($series, $proposed);   // live future bookings the new rule would strand
+// settle each one — CancelBooking, or ReparentSlotAsAdhoc to keep it and cut it loose
+$series = (new UpdateSeries)($series, $proposed);             // bumps rule_version and regenerates
+
+(new DetachOccurrence)($oneDay);      // "change just this day" — the rule stops managing it
+(new FollowSeries)($oneDay);          // ...and back again
+
+(new PauseSeries)($series);                                   // retires unclaimed future times, keeps booked ones
+(new ResumeSeries)($series, now()->addDays(30)->toImmutable());// reopens the same rows — never duplicates
+(new DeleteSeries)($series);                                  // refused if any day ever carried a booking
+```
+
+Editing only ever changes the future. Regeneration will not touch the past, a day somebody
+detached, or a day carrying a live booking — that last one is a promise to a person, so
+you settle it first. A day whose bookings are all *spent* cannot be deleted (bookings are
+history) and is **released** instead: closed, and cut loose from the series.
+
+Schedule the sweep, as with offers:
+
+```php
+// routes/console.php
+Schedule::call(fn () => (new SweepSeries)())->dailyAt('02:15')->withoutOverlapping();
+```
+
+It rolls every active series forward to its horizon (90 days when it names none), retires
+the unclaimed times that have passed, and ends a series whose last date has gone by **on
+that series' own calendar**. One series failing does not stop the sweep.
+
+### Pools that stand for people
+
+A pool entry does not have to be a person. Bind `Contracts\HostResolver` and an entry can
+name a *position* — a calling, a rota, a desk — resolved to whoever holds it at a moment,
+so a set of times opened months ahead survives the holder changing:
+
+```php
+// a service provider
+use RobinsonRyan\Dibs\Contracts\HostResolver;
+
+$this->app->bind(HostResolver::class, CallingHolders::class);
+
+// resolve(Model $host, CarbonInterface $at): Collection<int, Model>
+//   empty    = vacant: no capacity, and the slot is not bookable(requireFreeHost: true)
+//   two rows = two seats: two of capacity
+```
+
+The default binding is identity, so if you pool people directly nothing changes.
+
+```php
+$slot->capacityFor();          // people the pool resolves to with nothing else booked across it
+$slot->capacityFor($at);       // ...resolved at another moment; defaults to the slot's start
+```
+
+A slot with no pool at all falls back to its own `capacity` column — there is nobody to be
+busy.
 
 ### Offer
 
@@ -251,7 +365,8 @@ relation of the same name.
 `RobinsonRyan\Dibs\Events`: `AvailabilityPublished`, `AvailabilityClosed`,
 `BookingCreated`, `BookingCancelled`, `BookingCompleted`, `BookingMarkedNoShow`,
 `BookingHostAssigned`, `BookingHostUnassigned`, `OfferCreated`, `OfferAccepted`,
-`OfferWithdrawn`, `OfferExpired`. Each carries the affected model(s) with their
+`OfferWithdrawn`, `OfferExpired`, `SeriesMaterialised` (with the occurrences that run
+created), `SeriesPaused`, `SeriesResumed`, `SeriesDeleted`. Each carries the affected model(s) with their
 relations loaded and fires after the transaction commits. Hang notifications,
 reminders and workflow side effects on them.
 
@@ -259,7 +374,10 @@ reminders and workflow side effects on them.
 
 All extend `RobinsonRyan\Dibs\Exceptions\DibsException`: `InvalidTransition`,
 `DeletionRefused`, `SlotUnavailable`, `HostOverlap`, `OfferNotAcceptable`,
-`SlotNotOfferable`, `InvalidGeometry`.
+`SlotNotOfferable`, `InvalidGeometry`, `InvalidSeries` (which carries a machine `reason`
+— `windows.overlap`, `windows.gap`, `windows.bounds`, `ends_before_starts`,
+`ordinals.required`, `ordinals.forbidden`, `windows.required`, `hosts.required`,
+`occurrence.not_in_series` — so you write the sentence a person reads).
 
 ### Extending the models
 
@@ -268,10 +386,12 @@ and the package uses your class everywhere — relationships, actions, factories
 
 ## What it deliberately does not do
 
-Recurrence rules, joint-availability solving, cross-availability conflict enforcement
-beyond the opt-in overlap guard, notifications, UI/routes, authorization, timezone
-display, payments, waitlists, partial holds on capacity-N slots, iCal export, bookings
-spanning multiple slots. See `docs/SPEC.md` §9a.
+RRULE strings and calendar-standard recurrence parsing (repeating times ship as a
+`Series` with an enum cadence, not a parser), joint-availability solving, choosing which
+host takes a booking, cross-availability conflict enforcement beyond the opt-in overlap
+guard, notifications, Artisan commands, UI/routes, authorization, timezone display,
+payments, waitlists, partial holds on capacity-N slots, iCal export, bookings spanning
+multiple slots. See `docs/SPEC.md` §9a.
 
 ## Development
 

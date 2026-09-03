@@ -110,12 +110,22 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Changed
 
+- Spec **D5** and non-goal **N1** are reversed: recurrence is in, as a materialised
+  series. RRULE strings specifically stay out - the cadence is an enum plus
+  ordinals, not a parser. Spec **D10** gains its one exception, `SeriesClock`.
 - `HostAvailability::freeHosts()` and `Slot::bookable(requireFreeHost: true)`
   now put each pool entry through the bound `HostResolver` before asking who is
   busy, and count a person two entries stand for once. With the default identity
   resolver both answer exactly as they did. `bookable(requireFreeHost: true)` is
   no longer a single statement - the pool is resolved in PHP first - but the
   number of queries is fixed and does not grow with the number of slots.
+
+### Upgrading
+
+Additive: four new migrations, no existing column changed, no existing behaviour
+changed with the default resolver bound. Run `php artisan migrate` (or republish
+the migrations if you took ownership of them). A consumer that pools positions
+rather than people binds its own `HostResolver`; everyone else does nothing.
 
 ## [0.2.0] - 2026-09-01
 
