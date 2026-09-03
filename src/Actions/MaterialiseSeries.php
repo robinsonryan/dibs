@@ -30,6 +30,15 @@ use RobinsonRyan\Dibs\Support\SeriesClock;
  * The windows it places are wall clock, which is what `Support\SeriesClock`
  * is for — the D10 exception, documented there. Everything written out is a
  * UTC instant.
+ *
+ * One window can fail to become a time at all: an hour that a daylight-saving
+ * spring-forward swallows (02:00–03:00 on the changeover date in a zone that
+ * jumps from 02:00 to 03:00) converts to a zero-length or inverted instant on
+ * **that one date**. That date's occurrence for that block is skipped, with no
+ * exception — the hour genuinely does not exist there, and the alternative was
+ * an `InvalidGeometry` that rolled back the whole run, taking every other date
+ * and every other block of the series with it and failing again every night.
+ * Every other date the rule names is laid down as normal.
  */
 final class MaterialiseSeries
 {
@@ -74,7 +83,16 @@ final class MaterialiseSeries
                         continue;
                     }
 
-                    $created->push($this->occurrence($locked, $date, $index, $window));
+                    $opens = SeriesClock::instantOn($date, $window->starts_at_minutes, $locked->timezone);
+                    $closes = SeriesClock::instantOn($date, $window->ends_at_minutes, $locked->timezone);
+
+                    // The hour does not exist on this date (a spring-forward
+                    // gap). Skipped here rather than refused downstream.
+                    if ($closes->lessThanOrEqualTo($opens)) {
+                        continue;
+                    }
+
+                    $created->push($this->occurrence($locked, $date, $index, $opens, $closes));
                 }
             }
 
@@ -92,15 +110,15 @@ final class MaterialiseSeries
      * the same kind of thing as a day opened by hand and every later behaviour
      * — booking, offers, geometry edits, deletion — still applies to it.
      */
-    private function occurrence(Series $series, CarbonImmutable $date, int $index, SeriesWindow $window): Availability
+    private function occurrence(Series $series, CarbonImmutable $date, int $index, CarbonImmutable $opens, CarbonImmutable $closes): Availability
     {
         $availability = Dibs::query(Availability::class)->create([
             'context_type' => $series->context_type,
             'context_id' => $series->context_id,
             'name' => $series->title,
             'location' => $series->location,
-            'starts_at' => SeriesClock::instantOn($date, $window->starts_at_minutes, $series->timezone),
-            'ends_at' => SeriesClock::instantOn($date, $window->ends_at_minutes, $series->timezone),
+            'starts_at' => $opens,
+            'ends_at' => $closes,
             'slot_duration_minutes' => $series->slot_duration_minutes,
             'slot_padding_minutes' => $series->slot_padding_minutes,
             'min_notice_minutes' => $series->min_notice_minutes,

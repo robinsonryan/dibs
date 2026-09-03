@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Data\HostAssignment;
 use RobinsonRyan\Dibs\Data\SeriesSpec;
 use RobinsonRyan\Dibs\Data\WindowSpec;
+use RobinsonRyan\Dibs\Exceptions\InvalidSeries;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Series;
 use RobinsonRyan\Dibs\Models\SeriesHost;
@@ -24,6 +25,13 @@ use RobinsonRyan\Dibs\Support\SeriesClock;
  * the place, the pool, the clock the series keeps. That bumps `rule_version`
  * and regenerates: every future day that still follows the series is remade
  * from the new rule (`RegenerateSeries` for what it will and will not touch).
+ *
+ * What an edit may **not** touch is the context. It is stamped on every
+ * occurrence and on every copy of the pool, and moving it on the series alone
+ * left days in two tenants at once, so `UpdateSeries` refuses a context change
+ * outright (`InvalidSeries`, reason `context.immutable`) rather than
+ * half-applying it. Moving a rule between tenants means creating it in the new
+ * one; the days already made belong to the tenant they were made for.
  *
  * The other touches only what a day *carries* — its name, the consumer's meta,
  * how much notice a booking needs, how far ahead times are offered. Those are
@@ -43,17 +51,17 @@ final class UpdateSeries
                 throw (new ModelNotFoundException)->setModel($series::class, [$series->getKey()]);
             }
 
+            $this->assertContextIsUnchanged($locked, $spec);
+
             $locked->load(['windows', 'hosts']);
 
             $ruleChanged = $this->ruleChanged($locked, $spec);
 
             $locked->fill([
-                'context_type' => $spec->context->getMorphClass(),
-                'context_id' => (string) $spec->context->getKey(),
                 'title' => $spec->title,
                 'timezone' => $spec->timezone,
                 'cadence' => $spec->cadence,
-                'ordinals' => $spec->ordinals,
+                'ordinals' => $spec->ordinals(),
                 'starts_on' => $spec->startsOn,
                 'ends_on' => $spec->endsOn,
                 'slot_duration_minutes' => $spec->slotDurationMinutes,
@@ -83,6 +91,27 @@ final class UpdateSeries
 
             return $locked;
         });
+    }
+
+    /**
+     * Refused before anything is written: a series' context is on every day it
+     * has made and on every pool row copied onto them, and this action rewrites
+     * neither, so accepting the change would leave one rule with days in two
+     * tenants.
+     *
+     * @throws InvalidSeries
+     */
+    private function assertContextIsUnchanged(Series $series, SeriesSpec $spec): void
+    {
+        $same = $series->context_type === $spec->context->getMorphClass()
+            && $series->context_id === (string) $spec->context->getKey();
+
+        if (! $same) {
+            throw InvalidSeries::because(
+                InvalidSeries::CONTEXT_IMMUTABLE,
+                'A series keeps the context it was created in.',
+            );
+        }
     }
 
     /**
@@ -124,7 +153,7 @@ final class UpdateSeries
             return true;
         }
 
-        if ($this->sorted($series->ordinals) !== $this->sorted($spec->ordinals)) {
+        if ($this->sorted($series->ordinals) !== $spec->ordinals()) {
             return true;
         }
 

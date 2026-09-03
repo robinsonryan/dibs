@@ -268,14 +268,27 @@ $series = (new UpdateSeries)($series, $proposed);             // bumps rule_vers
 (new FollowSeries)($oneDay);          // ...and back again
 
 (new PauseSeries)($series);                                   // retires unclaimed future times, keeps booked ones
-(new ResumeSeries)($series, now()->addDays(30)->toImmutable());// reopens the same rows — never duplicates
+(new ResumeSeries)($series);                                  // reopens the same rows — never duplicates
+                                                              // (or ResumeSeries($series, $through) to say how far)
 (new DeleteSeries)($series);                                  // refused if any day ever carried a booking
 ```
 
 Editing only ever changes the future. Regeneration will not touch the past, a day somebody
-detached, or a day carrying a live booking — that last one is a promise to a person, so
-you settle it first. A day whose bookings are all *spent* cannot be deleted (bookings are
-history) and is **released** instead: closed, and cut loose from the series.
+detached, or a day carrying a live claim — a booking, or a time a pending offer is holding.
+Those are promises to a person, so you settle them first; the day is caught up by your next
+edit or by the nightly sweep. A day whose bookings are all *spent* cannot be deleted
+(bookings are history) and is **released** instead: closed, its remaining times retired,
+and cut loose from the series.
+
+`FindSeriesConflicts` asks "would the new rule still open this appointment's time?" the way
+the regeneration asks it — by **block**, not just by hour. Merge two evening blocks into one
+and a booking in the second is reported, even though the merged hours still cover it: its
+block is gone, and leaving it standing would put the same hour on sale twice.
+
+A series keeps the context it was created in; a spec naming another is refused
+(`InvalidSeries`, reason `context.immutable`). And an hour a daylight-saving jump swallows —
+2 am on the spring-forward Sunday — is skipped on that one date rather than failing the
+whole run.
 
 Schedule the sweep, as with offers:
 

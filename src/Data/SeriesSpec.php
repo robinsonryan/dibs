@@ -23,6 +23,13 @@ use RobinsonRyan\Dibs\Exceptions\InvalidSeries;
 final readonly class SeriesSpec
 {
     /**
+     * The ordinals a monthly rule may name: the first through fifth of its
+     * weekday in the month, and -1 for the last, whether that is the fourth or
+     * the fifth.
+     */
+    public const ORDINALS = [1, 2, 3, 4, 5, -1];
+
+    /**
      * @param  list<int>  $ordinals  1…5 and -1 for the last; monthly-ordinal only
      * @param  list<WindowSpec>  $windows
      * @param  list<HostAssignment>  $hosts
@@ -63,8 +70,42 @@ final readonly class SeriesSpec
             throw InvalidSeries::because(InvalidSeries::ENDS_BEFORE_STARTS, 'A series must end after it starts.');
         }
 
+        $this->ensureTimezoneExists();
         $this->ensureOrdinalsMatchCadence();
         $this->ensureWindowsAreCoherent();
+    }
+
+    /**
+     * The ordinals as they should be stored: each one named once, in order.
+     * `[1, 1, -1]` and `[-1, 1]` are the same rule, and a rule that reads twice
+     * as long as it is would have `UpdateSeries` calling an edit a rule change
+     * when nothing moved.
+     *
+     * @return list<int>
+     */
+    public function ordinals(): array
+    {
+        $unique = array_values(array_unique(array_map(intval(...), $this->ordinals)));
+
+        sort($unique);
+
+        return $unique;
+    }
+
+    /**
+     * A timezone the runtime actually knows. Unchecked, `Mars/Olympus` was
+     * stored happily and surfaced much later as Carbon's own
+     * `InvalidTimeZoneException`, thrown inside the materialisation
+     * transaction; this refuses before anything is written, in the package's
+     * own exception with a machine reason.
+     *
+     * @throws InvalidSeries
+     */
+    private function ensureTimezoneExists(): void
+    {
+        if (! in_array($this->timezone, timezone_identifiers_list(), true)) {
+            throw InvalidSeries::because(InvalidSeries::TIMEZONE_INVALID, 'A series must keep a timezone the system knows.');
+        }
     }
 
     /**
@@ -81,6 +122,12 @@ final readonly class SeriesSpec
 
         if (! $this->cadence->usesOrdinals() && $this->ordinals !== []) {
             throw InvalidSeries::because(InvalidSeries::ORDINALS_FORBIDDEN, 'Only a monthly series may carry ordinals.');
+        }
+
+        foreach ($this->ordinals as $ordinal) {
+            if (! in_array((int) $ordinal, self::ORDINALS, true)) {
+                throw InvalidSeries::because(InvalidSeries::ORDINALS_BOUNDS, 'An ordinal must be 1 to 5, or -1 for the last.');
+            }
         }
     }
 

@@ -6,6 +6,7 @@ namespace RobinsonRyan\Dibs\Actions;
 
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
+use RobinsonRyan\Dibs\Enums\SeriesStatus;
 use RobinsonRyan\Dibs\Exceptions\InvalidSeries;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Series;
@@ -21,7 +22,15 @@ use RobinsonRyan\Dibs\Support\Dibs;
  * to settle first).
  *
  * Returns whatever now stands on that date and block: the remade day, or the
- * original where a live booking kept it in place.
+ * original where a live claim kept it in place.
+ *
+ * A **paused or ended** series is the exception: it materialises nothing, so
+ * regenerating there would have deleted the clean day and put nothing back —
+ * the day would simply vanish, and this action would hand back a model that is
+ * no longer in the database. On one of those the day is re-attached and marked
+ * stale, and nothing else happens: resume remakes it (it regenerates on the way
+ * through), and an ended series leaves it standing, which is the documented
+ * edge for a detached day whose series has ended.
  */
 final class FollowSeries
 {
@@ -52,6 +61,10 @@ final class FollowSeries
                 // nothing else has to know it was ever detached.
                 'rule_version' => max(0, $series->rule_version - 1),
             ])->save();
+
+            if ($series->status !== SeriesStatus::Active) {
+                return $locked;
+            }
 
             (new RegenerateSeries)($series);
 

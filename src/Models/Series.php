@@ -17,6 +17,7 @@ use RobinsonRyan\Dibs\Database\Factories\SeriesFactory;
 use RobinsonRyan\Dibs\Enums\Cadence;
 use RobinsonRyan\Dibs\Enums\SeriesStatus;
 use RobinsonRyan\Dibs\Support\Dibs;
+use RobinsonRyan\Dibs\Support\SeriesClock;
 use RobinsonRyan\Dibs\Support\TablePrefixer;
 
 /**
@@ -239,16 +240,11 @@ class Series extends Model
     }
 
     /**
-     * A calendar date with no instant behind it: the same year, month and day,
-     * at UTC midnight, whatever zone the caller's Carbon was carrying. Nothing
-     * here is ever compared against a stored `timestamptz`.
+     * A calendar date with no instant behind it — `Support\SeriesClock::date()`,
+     * which is where every timezone call in this package lives (D10).
      */
     private function day(CarbonInterface $date): CarbonImmutable
     {
-        // Shifted, not converted: the wall clock the caller wrote is kept and
-        // re-read as UTC, so 6 pm in Denver is still the 8th and not the 9th.
-        // UTC has no daylight saving, so midnights here are exactly 86400s
-        // apart and the week arithmetic below is whole-day integer maths.
-        return CarbonImmutable::instance($date)->shiftTimezone('UTC')->startOfDay();
+        return SeriesClock::date($date);
     }
 }

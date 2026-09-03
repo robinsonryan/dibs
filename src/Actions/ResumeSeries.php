@@ -30,6 +30,12 @@ use RobinsonRyan\Dibs\Support\SlotStatusSweep;
  * Only slots that never carried a booking are reopened, which is precisely the
  * set pause retired: a slot retired by a *geometry* regeneration is history
  * (R41, it is retired because it carries bookings) and stays that way.
+ *
+ * Then it **regenerates** rather than merely materialising, because a rule may
+ * have been edited while it was paused (materialisation creates nothing for a
+ * paused series, so those days are still standing on the old version) and
+ * because a day put back under the rule by `FollowSeries` while it was paused
+ * is waiting to be remade. Regeneration is the one code path that remakes a day.
  * Materialisation then fills in the dates that came due while it was paused,
  * out to `$through` — or, when the caller names none, to the same horizon
  * `RegenerateSeries` and `SweepSeries` derive (`max_horizon_days`, 90 days when
@@ -56,7 +62,7 @@ final class ResumeSeries
 
             $this->reopenWhatIsAhead($locked);
 
-            (new MaterialiseSeries)($locked, $through ?? $this->horizonOf($locked));
+            (new RegenerateSeries)($locked, $through ?? $this->horizonOf($locked));
 
             DB::afterCommit(fn () => event(new SeriesResumed($locked)));
 

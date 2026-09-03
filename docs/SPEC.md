@@ -53,7 +53,7 @@ cutting it loose from its series when history stops it being deleted.
 | D7 | Host assignment is many-to-many with a `role` string (`interviewer`, `room`, `driver`, …) — records multi-resource combos (doctor + room) without a breaking migration later. |
 | D8 | **Joint-availability computation is a non-goal.** The publisher declares the resource combination; the package never solves for one. |
 | D9 | Auto-assign: at booking time, for each role in the availability's pool, a pool of exactly one host is assigned automatically. Larger pools stay unassigned until a consumer assigns. |
-| D10 | The package is **timezone-agnostic**: all times are UTC instants (`timestamptz`). Notice/horizon are duration comparisons against `now()`. Wall-clock parsing/display is the consumer's job at the boundary. **One exception, added 2026-09-03 with D16**: a series' windows are wall clock (minutes from local midnight) and only the series' own `timezone` can say which instant "6 pm" is on a given date — a fixed offset cannot keep 6 pm at 6 pm across a daylight-saving change. That conversion lives in `Support\SeriesClock` and nowhere else; `MaterialiseSeries` uses it to place occurrences and `FindSeriesConflicts` to ask the same question backwards. Everything either writes or compares is still a UTC instant. |
+| D10 | The package is **timezone-agnostic**: all times are UTC instants (`timestamptz`). Notice/horizon are duration comparisons against `now()`. Wall-clock parsing/display is the consumer's job at the boundary. **One exception, added 2026-09-03 with D16**: a series' windows are wall clock (minutes from local midnight) and only the series' own `timezone` can say which instant "6 pm" is on a given date — a fixed offset cannot keep 6 pm at 6 pm across a daylight-saving change. That conversion lives in `Support\SeriesClock` and nowhere else — including `Series::occursOn()`/`occurrenceDates()`, which read a calendar date through `SeriesClock::date()`, so a grep for a timezone call in `src/` has exactly one file in it. `MaterialiseSeries` uses it to place occurrences and `FindSeriesConflicts` to ask the same question backwards. Everything either writes or compares is still a UTC instant. **A window a spring-forward swallows** (02:00–03:00 on the changeover date in a zone that jumps 02:00 → 03:00) converts to a zero-length or inverted instant on that one date: that date's occurrence for that block is skipped silently, and every other date the rule names is laid down as normal. The alternative — refusing — rolled the whole run back and failed again every night for one hour that does not exist. |
 | D11 | An outstanding Offer is a promise: accepting it works even if the Availability has since been closed, and notice/horizon checks do **not** apply to offer acceptance (the person was invited explicitly). |
 | D12 | Offers hold capacity-1 slots only in v1 (holding one unit of a capacity-N slot is deferred). |
 | D13 | Booking `type` is a consumer-defined string, denormalized onto the booking at creation (default: the availability's `type`) so bookings survive availability edits. |
@@ -296,10 +296,12 @@ exclusive hosts it reports what is *left*.
 - **CreateSeries(SeriesSpec)** — records the rule at `rule_version` 1 and materialises
   nothing; how far ahead to open times is a separate decision, made by the caller.
   `SeriesSpec::ensureValid()` enforces only what is true of any consumer's series (≥ 1
-  window, ≥ 1 host, an end after the start, ordinals on the monthly cadence and nowhere
-  else, windows inside their day and non-overlapping, and windows sharing a weekday
-  separated by at least `duration + padding` — room for one whole appointment) and throws
-  `InvalidSeries` carrying a machine `reason`. Domain rules (business hours, rounding, a
+  window, ≥ 1 host, an end after the start, a timezone the runtime knows
+  (`timezone.invalid`), ordinals on the monthly cadence and nowhere else and each one in
+  {1,2,3,4,5,-1} (`ordinals.bounds`), windows inside their day and non-overlapping, and
+  windows sharing a weekday separated by at least `duration + padding` — room for one
+  whole appointment) and throws `InvalidSeries` carrying a machine `reason`.
+  `SeriesSpec::ordinals()` is what is stored: each ordinal once, in order. Domain rules (business hours, rounding, a
   unique title in a leader's words) stay with the consumer, which is the only place that
   can phrase the refusal for a person.
 - **MaterialiseSeries(Series, `$through`)** — for each local date the cadence admits
@@ -312,6 +314,11 @@ exclusive hosts it reports what is *left*.
   ordinals, dates, duration, padding, place, pool, timezone) bumps `rule_version` and
   regenerates; an edit that only changes what a day *carries* (title, meta, notice,
   horizon) is copied onto future following occurrences, with no bump and no slot touched.
+  The **context is immutable**: a spec naming a different one is refused with
+  `InvalidSeries` (`context.immutable`) before anything is written, because the context is
+  stamped on every occurrence and every copy of the pool and this action rewrites neither
+  — accepting it left one rule with days in two tenants. Moving a rule between tenants
+  means creating it in the new one.
 - **RegenerateSeries(Series)** — remakes every future, following occurrence still on an
   older version, then materialises out to `max_horizon_days` (90 days when null). It will
   not touch the past, a detached occurrence, or one carrying a **live claim** — a booking,
@@ -326,7 +333,12 @@ exclusive hosts it reports what is *left*.
   and stamped `meta.released_from_series` so `DeleteSeries` can still find it.
 - **FindSeriesConflicts(Series, SeriesSpec)** — pure read: the live future bookings a
   proposed rule would strand, so the consumer can ask a person rather than cancel on
-  their behalf. A shorter horizon is not a conflict.
+  their behalf. A shorter horizon is not a conflict. "Would still open it" is judged the
+  way regeneration judges it — **by block index**, the `window_index` half of the
+  occurrence key — so a booking is stranded unless the proposed rule puts a block at its
+  day's index, on its date, still covering its time. Merging or splitting blocks
+  therefore reports the bookings that would otherwise be left standing on the old rule
+  version while the new grid was laid over the same hours.
 - **ReparentSlotAsAdhoc(Slot)** — makes a booked slot adhoc, keeping the booking, its
   hosts, its time and its place (copied from the availability when the slot had none), so
   the day can be remade around it. This is how "keep it" is answered.
@@ -339,7 +351,11 @@ exclusive hosts it reports what is *left*.
   pause, resume, the sweep and the released-day retirement.
 - **DetachOccurrence / FollowSeries(Availability)** — take one day out of the rule's
   hands and put it back. Following marks the day stale and lets `RegenerateSeries` do the
-  work, so exactly one code path remakes a day.
+  work, so exactly one code path remakes a day. On a **paused or ended** series it
+  re-attaches and stops there: materialisation creates nothing for either, so
+  regenerating would have deleted the day and put nothing back. Resume remakes it (it
+  regenerates); on an ended series it stays as it is, which is the same edge as a
+  detached day whose series has ended.
 - **DeleteSeries(Series)** — refused (`DeletionRefused`) if any occurrence ever carried a
   booking, cancelled ones included — **including a day the rule has since released**,
   found through `meta.released_from_series`, because a rule whose day was cut loose after
@@ -467,6 +483,11 @@ per the `verification` skill before any "done" claim.
 | R70 | A released day's remaining open slots are retired, so it leaves `Slot::upcoming()` as well as `bookable()`, and `PublishAvailability` cannot revive them; the day records `meta.released_from_series` | `Actions\RegenerateSeries::release()` via `Support\SlotStatusSweep`, `Actions\PublishAvailability` (generates only when there are no slots at all) | `UpdateSeriesTest` "retires the times a released day still offered, and publishing does not bring them back" | Done |
 | R71 | `DeleteSeries` counts released days too — a rule whose used day was cut loose by a later edit is still refused | `Actions\DeleteSeries` (`meta->released_from_series`) | `SeriesLifecycleTest` "still refuses to delete a rule whose used day was released by a later edit" | Done |
 | R72 | `SweepSeries` regenerates each active series rather than only materialising, so a day left standing on the old rule is caught up once its claim is settled | `Actions\SweepSeries::sweep()` | `UpdateSeriesTest` "catches the held day up on the next sweep, once the offer has lapsed" | Done |
+| R76 | `UpdateSeries` refuses a context change with `InvalidSeries` reason `context.immutable`, before anything is written | `Actions\UpdateSeries::assertContextIsUnchanged()` | `UpdateSeriesTest` "refuses to move a series into another context rather than half-applying it" | Done |
+| R77 | `FindSeriesConflicts` judges "still fits" by `(date, window_index)` — the key regeneration uses — so merging or splitting blocks reports the bookings the regeneration would strand, and a block that keeps its index and still covers its time is not a conflict | `Actions\FindSeriesConflicts::stillFits()`, `::blocksByWeekday()` | `UpdateSeriesTest` merged-block and moved-block cases (merged case red before the fix) | Done |
+| R78 | `SeriesSpec` refuses an unknown timezone (`timezone.invalid`) and an ordinal outside {1,2,3,4,5,-1} (`ordinals.bounds`); `ordinals()` stores each ordinal once, in order | `Data\SeriesSpec`, `Exceptions\InvalidSeries` | `SeriesSpecTest` timezone / ordinal-bounds / dedupe cases | Done |
+| R79 | A window that converts to a zero-length or inverted instant on a date (a daylight-saving spring-forward gap) is skipped for that date, with no exception and no effect on any other date or block | `Actions\MaterialiseSeries` | `MaterialiseSeriesTest` "skips only the date where a daylight-saving jump swallows the window" | Done |
+| R80 | `FollowSeries` on a paused or ended series re-attaches the day and regenerates nothing, so the day cannot vanish; `ResumeSeries` regenerates, so it is remade on resume | `Actions\FollowSeries`, `Actions\ResumeSeries` | `SeriesLifecycleTest` "puts a detached day back under a paused rule without making it disappear" | Done |
 | R74 | A slot let go while its series is **paused** retires instead of reopening, so a lapsed offer cannot put a time back on sale the leader took down; `ResumeSeries` reopens that very row with the rest | `Support\ReleaseSlot` | `SeriesLifecycleTest` "does not put a time back on sale when its offer lapses while the series is paused" | Done |
 | R75 | One definition of a slot's capacity (`Support\SlotCapacity`), read by `BookSlot::assertBookable`, `BookSlot::settle`, `Support\ReleaseSlot` and `Slot::capacityFor()`: a cancellation on a pooled slot with free holders left reopens it rather than reading the `capacity` column | `Support\SlotCapacity`, `Actions\BookSlot`, `Support\ReleaseSlot`, `Slot::capacityFor()` | `PooledCapacityTest` "opens a full pooled slot again when one of its appointments is cancelled" | Done |
 | R73 | Lock-then-set is one helper carrying the READ COMMITTED rationale once, used by pause, resume, the sweep and the released-day retirement; `ResumeSeries($through = null)` derives the horizon the other two verbs derive | `Support\SlotStatusSweep`, `Actions\ResumeSeries::horizonOf()` | `SeriesLifecycleTest` pause/resume/sweep cases (unchanged behaviour), `SeriesLifecycleTest` "resumes to the series' own horizon when the caller names none" | Done |

@@ -12,11 +12,14 @@ use RobinsonRyan\Dibs\Actions\PublishAvailability;
 use RobinsonRyan\Dibs\Actions\ReparentSlotAsAdhoc;
 use RobinsonRyan\Dibs\Actions\SweepSeries;
 use RobinsonRyan\Dibs\Actions\UpdateSeries;
+use RobinsonRyan\Dibs\Data\HostAssignment;
+use RobinsonRyan\Dibs\Data\SeriesSpec;
 use RobinsonRyan\Dibs\Data\WindowSpec;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\Cadence;
 use RobinsonRyan\Dibs\Enums\OfferStatus;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
+use RobinsonRyan\Dibs\Exceptions\InvalidSeries;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\BookingHost;
@@ -257,4 +260,81 @@ it('retires the times a released day still offered, and publishing does not brin
 
     expect(Slot::bookable()->where('availability_id', $occurrence->id)->count())->toBe(0)
         ->and(Slot::upcoming()->where('availability_id', $occurrence->id)->count())->toBe(0);
+});
+
+it('refuses to move a series into another context rather than half-applying it', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-15'));
+
+    $before = $series->context_id;
+
+    $moved = new SeriesSpec(
+        title: $series->title,
+        context: organization('Second Ward'),
+        timezone: $series->timezone,
+        cadence: Cadence::Weekly,
+        ordinals: [],
+        startsOn: CarbonImmutable::parse($series->starts_on->format('Y-m-d')),
+        endsOn: null,
+        slotDurationMinutes: $series->slot_duration_minutes,
+        slotPaddingMinutes: $series->slot_padding_minutes,
+        minNoticeMinutes: null,
+        maxHorizonDays: null,
+        location: $series->location,
+        windows: [new WindowSpec(0, 18 * 60, 20 * 60)],
+        hosts: [new HostAssignment($series->hosts->first()?->host ?? user('Bishop'), 'interviewer')],
+        meta: $series->meta,
+    );
+
+    try {
+        (new UpdateSeries)($series, $moved);
+        $this->fail('The context change was accepted.');
+    } catch (InvalidSeries $refusal) {
+        expect($refusal->reason)->toBe('context.immutable');
+    }
+
+    // Nothing moved: not the rule, and not one of the days it has made.
+    expect($series->fresh()?->context_id)->toBe($before)
+        ->and($series->occurrences()->pluck('context_id')->unique()->all())->toBe([$before]);
+});
+
+it('reports a booking that a merged block would strand, though the hours still cover it', function (): void {
+    // Two blocks on Sunday evening with room for one appointment between them.
+    $series = openSeries([
+        new WindowSpec(0, 18 * 60, 19 * 60),
+        new WindowSpec(0, 19 * 60 + 30, 20 * 60 + 30),
+    ]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-08'));
+
+    $second = $series->occurrences()
+        ->where('occurs_on', '2026-03-08')->where('window_index', 1)->firstOrFail();
+    $booking = bookFirstSlotOf($second);
+
+    // Merged into one long block: 7:30 is still inside 6–9, so judged by time
+    // alone this booking "fits" — but its block is gone, regeneration would
+    // remake block 0 over the same hours and leave this day standing beside it.
+    $conflicts = (new FindSeriesConflicts)($series, editedSpec($series, [new WindowSpec(0, 18 * 60, 21 * 60)]));
+
+    expect($conflicts->pluck('id')->all())->toBe([$booking->id]);
+});
+
+it('leaves a booking alone when its block keeps its place and still covers it', function (): void {
+    $series = openSeries([
+        new WindowSpec(0, 18 * 60, 19 * 60),
+        new WindowSpec(0, 19 * 60 + 30, 20 * 60 + 30),
+    ]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-08'));
+
+    $second = $series->occurrences()
+        ->where('occurs_on', '2026-03-08')->where('window_index', 1)->firstOrFail();
+    bookFirstSlotOf($second);
+
+    // The second block simply runs later; it is still the second block and
+    // still covers 7:30.
+    $conflicts = (new FindSeriesConflicts)($series, editedSpec($series, [
+        new WindowSpec(0, 18 * 60, 19 * 60),
+        new WindowSpec(0, 19 * 60 + 30, 21 * 60),
+    ]));
+
+    expect($conflicts)->toHaveCount(0);
 });

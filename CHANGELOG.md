@@ -31,6 +31,39 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Changed
 
+- **`UpdateSeries` refuses a context change** with `InvalidSeries`, reason
+  `context.immutable`, instead of half-applying it. The context is stamped on
+  every occurrence and every copy of the pool and the action rewrites neither,
+  so a spec naming a different one used to leave the series in tenant B with all
+  its existing days — and their pools — still in tenant A. Moving a rule between
+  tenants means creating it in the new one.
+- **`FindSeriesConflicts` judges "still fits" by block index**, the same
+  `(occurs_on, window_index)` key regeneration works from, instead of by time
+  alone. Merging 6–7 and 7:30–8:30 into one 6–9 block with an appointment at
+  7:30 reported nothing, and the regeneration then remade block 0 while leaving
+  the booked block 1 standing on the old rule version — two open slots at the
+  same hour. Consumers will see conflicts reported for merges and splits that
+  were silently accepted before; a block that keeps its index and still covers
+  the booked time is not a conflict.
+- **`SeriesSpec::ensureValid()` checks the timezone and the ordinals.** An
+  unknown zone (`Mars/Olympus`) was stored and surfaced much later as Carbon's
+  `InvalidTimeZoneException` inside the materialisation transaction; it is now
+  refused up front with reason `timezone.invalid`. An ordinal outside
+  {1,2,3,4,5,-1} — `0`, `6`, `-2` — was accepted and silently matched no date;
+  reason `ordinals.bounds`. `SeriesSpec::ordinals()` is what `CreateSeries` and
+  `UpdateSeries` store: each ordinal once, in order.
+- **A window a daylight-saving jump swallows is skipped for that date.** An
+  02:00–03:00 window on a spring-forward date converts to a zero-length instant,
+  and `PublishAvailability` threw `InvalidGeometry`, rolling back the whole
+  materialisation — every other date and block of that series — and failing
+  again every night. That one date's occurrence for that one block is now
+  skipped silently; the rest of the rule is laid down as normal.
+- **`FollowSeries` on a paused or ended series re-attaches without
+  regenerating.** Regeneration remakes nothing for a series that materialises
+  nothing, so the day was deleted and never rebuilt — the action returned a
+  model that was no longer in the database. It now clears `detached_at`, marks
+  the day stale and stops; `ResumeSeries` regenerates (rather than only
+  materialising), so the day is remade on resume.
 - **A slot let go while its series is paused steps aside instead of going back
   on sale.** `PauseSeries` leaves a held slot alone — the invitee is still
   deciding — but when the offer lapsed, `ReleaseSlot` returned the slot to
@@ -57,6 +90,14 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Added
 
+- `InvalidSeries` reasons `timezone.invalid`, `ordinals.bounds` and
+  `context.immutable`.
+- `RegenerateSeries(Series $series, ?CarbonImmutable $through = null)` — the
+  second argument is new and optional; omitted, the horizon is derived as
+  before. `ResumeSeries` passes the date its caller asked for.
+- `Support\SeriesClock::date()` — the calendar-date reading `Series` used to do
+  with a `shiftTimezone` call of its own, so D10's "one file reads a clock" is
+  literally true again.
 - `Support\SlotCapacity` — the one definition of how many appointments a slot
   can take, with `forClaim()` (the booking/release reading, exclusive hosts
   forced off) and `of()` (the reporting reading `Slot::capacityFor()` takes).

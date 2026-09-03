@@ -309,3 +309,31 @@ it('does not put a time back on sale when its offer lapses while the series is p
 
     expect($slot->fresh()?->status)->toBe(SlotStatus::Open);
 });
+
+it('puts a detached day back under a paused rule without making it disappear', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-15'));
+
+    $day = (new DetachOccurrence)($series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail());
+
+    (new UpdateSeries)($series, editedSpec($series, [new WindowSpec(0, 9 * 60, 11 * 60)], horizon: 21));
+    (new PauseSeries)($series->fresh());
+
+    $followed = (new FollowSeries)($day->fresh());
+
+    // A paused series makes nothing, so regenerating here would have deleted
+    // the day and put nothing back. It is re-attached and marked stale instead.
+    expect(Availability::query()->whereKey($day->id)->exists())->toBeTrue()
+        ->and($followed->id)->toBe($day->id)
+        ->and($followed->detached_at)->toBeNull()
+        ->and($followed->rule_version)->toBe(1);
+
+    // Resume is what remakes it, on the current rule.
+    (new ResumeSeries)($series->fresh(), CarbonImmutable::parse('2026-03-15'));
+
+    $remade = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail();
+
+    expect($remade->id)->not->toBe($day->id)
+        ->and($remade->rule_version)->toBe(2)
+        ->and($remade->starts_at->setTimezone('America/Denver')->format('H:i'))->toBe('09:00');
+});

@@ -220,3 +220,19 @@ it('keeps a cancelled booking on its occurrence without remaking the day', funct
     expect($series->occurrences()->where('occurs_on', '2026-03-08')->count())->toBe(1)
         ->and($slot->fresh()?->status)->toBe(SlotStatus::Open);
 });
+
+it('skips only the date where a daylight-saving jump swallows the window', function (): void {
+    // 2 am to 3 am on Sundays in Denver: on 2026-03-08 the clocks go straight
+    // from 2 to 3, so that hour does not exist on that date and on no other.
+    $series = openSeries([new WindowSpec(0, 2 * 60, 3 * 60)]);
+
+    $created = (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-15'));
+
+    expect($created)->toBe(2)
+        ->and($series->occurrences()->orderBy('occurs_on')->pluck('occurs_on')
+            ->map(fn ($date): string => $date->format('Y-m-d'))->all())
+        ->toBe(['2026-03-01', '2026-03-15'])
+        // ...and the run is not poisoned: a second one still creates nothing
+        // new, and no exception was ever thrown.
+        ->and((new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-15')))->toBe(0);
+});

@@ -31,7 +31,7 @@ final class CreateSeries
                 'title' => $spec->title,
                 'timezone' => $spec->timezone,
                 'cadence' => $spec->cadence,
-                'ordinals' => $spec->ordinals,
+                'ordinals' => $spec->ordinals(),
                 'starts_on' => $spec->startsOn,
                 'ends_on' => $spec->endsOn,
                 'slot_duration_minutes' => $spec->slotDurationMinutes,

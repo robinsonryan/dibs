@@ -54,11 +54,17 @@ use RobinsonRyan\Dibs\Support\SlotStatusSweep;
 final class RegenerateSeries
 {
     /**
+     * `$through` is how far the materialisation that follows reaches. Omitted,
+     * it is the series' own horizon — three months when it names none, which is
+     * far enough that a leader sees the rule working and near enough that an
+     * edit does not rewrite a year of rows. `ResumeSeries` passes the date its
+     * caller asked for.
+     *
      * @return int occurrences created by the materialisation that follows
      */
-    public function __invoke(Series $series): int
+    public function __invoke(Series $series, ?CarbonImmutable $through = null): int
     {
-        return DB::transaction(function () use ($series): int {
+        return DB::transaction(function () use ($series, $through): int {
             $locked = Dibs::lock($series);
 
             if (! $locked instanceof Series) {
@@ -69,12 +75,10 @@ final class RegenerateSeries
 
             $this->clearStale($locked, $today);
 
-            // Default horizon when the series names none: three months is far
-            // enough that a leader sees the rule working and near enough that
-            // an edit does not rewrite a year of rows.
-            $through = $today->addDays($locked->max_horizon_days ?? 90);
-
-            return (new MaterialiseSeries)($locked, $through);
+            return (new MaterialiseSeries)(
+                $locked,
+                $through ?? $today->addDays($locked->max_horizon_days ?? 90),
+            );
         });
     }
 

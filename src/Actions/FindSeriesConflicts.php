@@ -27,6 +27,16 @@ use RobinsonRyan\Dibs\Support\SeriesClock;
  * are *offered*, and an appointment somebody already has is not withdrawn
  * because the window for making new ones narrowed.
  *
+ * "Would still open it" is asked the way regeneration asks it: **by block
+ * index**, because an occurrence is keyed `(series_id, occurs_on, window_index)`
+ * and that key is what decides whether a day is remade. Judging by time alone
+ * missed the case that matters most — merge 6–7 and 7:30–8:30 into one 6–9
+ * block with an appointment at 7:30 and the booking still "fits" the new hours,
+ * so nothing is reported; regeneration then remakes block 0, leaves the booked
+ * block 1 standing on the old rule version, and the day ends up offering the
+ * same hour twice. A live-booked day is a conflict unless the proposed rule
+ * puts a block at *its* index, on its date, still covering its time.
+ *
  * Past bookings and days somebody detached are ignored for the same reasons
  * regeneration leaves them alone.
  */
@@ -44,9 +54,10 @@ final class FindSeriesConflicts
         }
 
         $probe = $this->probe($series, $proposed);
+        $blocks = $this->blocksByWeekday($proposed);
 
         return $bookings
-            ->reject(fn (Booking $booking): bool => $this->stillFits($booking, $probe, $proposed))
+            ->reject(fn (Booking $booking): bool => $this->stillFits($booking, $probe, $blocks, $proposed->timezone))
             ->values();
     }
 
@@ -71,14 +82,17 @@ final class FindSeriesConflicts
     }
 
     /**
-     * Does the proposed rule still open this booking's time?
+     * Does the proposed rule still open this booking's time, on its own block?
      *
      * Asked against the day the booking was made on and in instants, not wall
-     * clocks: the proposed windows are placed on that date through the same
-     * conversion materialisation would use, and the slot has to sit wholly
-     * inside one of them.
+     * clocks: the proposed block at that day's index is placed on that date
+     * through the same conversion materialisation would use, and the slot has to
+     * sit wholly inside it. A day with no block index cannot be matched to a
+     * proposed block at all, so its bookings are reported.
+     *
+     * @param  array<int, list<WindowSpec>>  $blocks
      */
-    private function stillFits(Booking $booking, Series $probe, SeriesSpec $proposed): bool
+    private function stillFits(Booking $booking, Series $probe, array $blocks, string $timezone): bool
     {
         $slot = $booking->slot;
 
@@ -98,17 +112,36 @@ final class FindSeriesConflicts
             return false;
         }
 
-        foreach ($proposed->windows as $window) {
-            if ($window->weekday !== $date->dayOfWeek) {
-                continue;
-            }
+        $index = $day->window_index;
+        $window = $index === null ? null : ($blocks[$date->dayOfWeek][$index] ?? null);
 
-            if ($this->coveredBy($slot, $date, $window, $proposed->timezone)) {
-                return true;
-            }
+        if (! $window instanceof WindowSpec) {
+            return false;
         }
 
-        return false;
+        return $this->coveredBy($slot, $date, $window, $timezone);
+    }
+
+    /**
+     * The proposed blocks grouped by weekday and put in clock order — the same
+     * grouping `MaterialiseSeries` makes, so a block's position here is the
+     * `window_index` the regeneration would give it.
+     *
+     * @return array<int, list<WindowSpec>>
+     */
+    private function blocksByWeekday(SeriesSpec $proposed): array
+    {
+        $windows = $proposed->windows;
+
+        usort($windows, static fn (WindowSpec $a, WindowSpec $b): int => $a->startsAtMinutes <=> $b->startsAtMinutes);
+
+        $blocks = [];
+
+        foreach ($windows as $window) {
+            $blocks[$window->weekday][] = $window;
+        }
+
+        return $blocks;
     }
 
     private function coveredBy(Slot $slot, CarbonImmutable $date, WindowSpec $window, string $timezone): bool
@@ -128,7 +161,7 @@ final class FindSeriesConflicts
     {
         $probe = Dibs::make(Series::class);
         $probe->cadence = $proposed->cadence;
-        $probe->ordinals = $proposed->ordinals;
+        $probe->ordinals = $proposed->ordinals();
         $probe->starts_on = $proposed->startsOn;
         $probe->ends_on = $proposed->endsOn;
         $probe->timezone = $proposed->timezone;

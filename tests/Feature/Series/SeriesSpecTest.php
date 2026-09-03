@@ -24,11 +24,12 @@ function seriesSpec(
     int $duration = 15,
     int $padding = 5,
     ?Model $context = null,
+    string $timezone = 'America/Denver',
 ): SeriesSpec {
     return new SeriesSpec(
         title: 'Tuesday and Thursday evenings',
         context: $context ?? organization('First Ward'),
-        timezone: 'America/Denver',
+        timezone: $timezone,
         cadence: $cadence,
         ordinals: $ordinals,
         startsOn: CarbonImmutable::parse('2026-09-06'),
@@ -156,4 +157,30 @@ it('accepts a monthly rule that names its ordinals', function (): void {
         ->ensureValid();
 
     expect(true)->toBeTrue();
+});
+
+it('refuses a timezone the system does not know', function (): void {
+    refuses(
+        seriesSpec([new WindowSpec(2, 18 * 60, 20 * 60)], timezone: 'Mars/Olympus'),
+        'timezone.invalid',
+    );
+});
+
+it('refuses an ordinal that is not a week of the month', function (): void {
+    foreach ([0, 6, -2] as $ordinal) {
+        refuses(
+            seriesSpec([new WindowSpec(2, 18 * 60, 20 * 60)], cadence: Cadence::MonthlyOrdinal, ordinals: [$ordinal]),
+            'ordinals.bounds',
+        );
+    }
+});
+
+it('names each ordinal once, in order, however the caller listed them', function (): void {
+    $spec = seriesSpec(
+        [new WindowSpec(2, 18 * 60, 20 * 60)],
+        cadence: Cadence::MonthlyOrdinal,
+        ordinals: [3, 1, 3, -1],
+    );
+
+    expect($spec->ordinals())->toBe([-1, 1, 3]);
 });

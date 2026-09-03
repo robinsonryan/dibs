@@ -28,6 +28,12 @@ final class InvalidSeries extends DibsException
 
     public const ORDINALS_FORBIDDEN = 'ordinals.forbidden';
 
+    public const ORDINALS_BOUNDS = 'ordinals.bounds';
+
+    public const TIMEZONE_INVALID = 'timezone.invalid';
+
+    public const CONTEXT_IMMUTABLE = 'context.immutable';
+
     public const OCCURRENCE_NOT_IN_SERIES = 'occurrence.not_in_series';
 
     public function __construct(public readonly string $reason, string $message)
