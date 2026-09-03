@@ -209,7 +209,11 @@ resolves to** is free across it — what a member should be offered, as against 
 leader may book into. An availability with no pool is never excluded (nobody to be busy),
 and the flag is off by default, so `bookable()` on its own is unchanged. Because SQL
 cannot call PHP, the pools in play are resolved before the filter runs; the number of
-queries is fixed and does not grow with the number of slots.
+statements **the package itself** issues is a fixed handful and does not grow with the
+number of slots. Your resolver is asked once per distinct position, per context, per
+availability *date* — two roles naming one calling, and two blocks of the same Sunday, are
+one call; the next Sunday is another. It is memoised for the length of the one read and
+never beyond it.
 
 ### Repeating times
 
@@ -313,7 +317,10 @@ use RobinsonRyan\Dibs\Contracts\HostResolver;
 
 $this->app->bind(HostResolver::class, CallingHolders::class);
 
-// resolve(Model $host, CarbonInterface $at): Collection<int, Model>
+// resolve(Model $host, CarbonInterface $at, ?Model $context = null): Collection<int, Model>
+//   $at      = the moment to answer for — the slot's start, or the availability's
+//   $context = the owning scope asking (the availability's own): a position is often a
+//              catalog row several tenants share, so who holds it depends on who asks
 //   empty    = vacant: no capacity, and the slot is not bookable(requireFreeHost: true)
 //   two rows = two seats: two of capacity
 ```

@@ -31,6 +31,20 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Changed
 
+- **The `HostResolver` is asked far less often, and the docs say how often.** It
+  was called once per pool row per reachable availability: sixteen days times
+  three pooled positions was 48 calls for one
+  `bookable(requireFreeHost: true)` read, and a resolver that queries (ccstake's
+  does, per calling per ward) turned a member's page into hundreds of
+  statements. It is now asked once per distinct `(entry, context, availability
+  date)` for the length of one read — two roles naming one position, and two
+  blocks of the same day, are one question; a second date is a second question.
+  Nothing is remembered across reads. README and SPEC no longer claim a flat
+  query count for the resolver: the fixed handful is the package's own
+  statements, and the resolver's own bound is now stated beside it and covered
+  by a test with a **counting** resolver rather than the identity one.
+  A resolver that answered differently for two moments on one calendar date now
+  sees the first answer used for both, within a single read.
 - **`UpdateSeries` refuses a context change** with `InvalidSeries`, reason
   `context.immutable`, instead of half-applying it. The context is stamped on
   every occurrence and every copy of the pool and the action rewrites neither,
@@ -90,6 +104,8 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Added
 
+- `Support\HostResolution` — the memo that holds the resolver's call volume down,
+  and the honest statement of it.
 - `InvalidSeries` reasons `timezone.invalid`, `ordinals.bounds` and
   `context.immutable`.
 - `RegenerateSeries(Series $series, ?CarbonImmutable $through = null)` — the

@@ -15,13 +15,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Concerns\HasUuidPrimaryKey;
-use RobinsonRyan\Dibs\Contracts\HostResolver;
 use RobinsonRyan\Dibs\Database\Factories\SlotFactory;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\BookingStatus;
 use RobinsonRyan\Dibs\Enums\SlotOrigin;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Support\Dibs;
+use RobinsonRyan\Dibs\Support\HostResolution;
 use RobinsonRyan\Dibs\Support\OverlapCheck;
 use RobinsonRyan\Dibs\Support\SlotCapacity;
 use RobinsonRyan\Dibs\Support\TablePrefixer;
@@ -222,10 +222,12 @@ class Slot extends Model
         // than itself (`HostResolver`), so the pools of the availabilities this
         // query can reach are resolved first — one query for the pool rows, one
         // for the moments to resolve them at, and the resolver once per distinct
-        // entry — and the people that come back are handed to the busy check as
-        // a values list. Resolving before the outer query runs means the moment
-        // used is the *availability's* start rather than each slot's, which is
-        // the same calendar day; `capacityFor()` resolves per slot.
+        // (entry, context, date) however many pool rows and availabilities name
+        // it (`Support\HostResolution`) — and the people that come back are
+        // handed to the busy check as a values list. Resolving before the outer
+        // query runs means the moment used is the *availability's* start rather
+        // than each slot's, which is the same calendar day; `capacityFor()`
+        // resolves per slot.
         $resolved = $this->resolvedPool($query);
 
         // Keep the slot when its availability has no pool at all (nobody to be
@@ -277,6 +279,10 @@ class Slot extends Model
      * list ready to be joined against. Null when nothing resolves — no pools at
      * all, or every pool vacant.
      *
+     * The resolver is asked once per distinct pool host per availability — not
+     * once per pool row per slot — and once only for a host two availabilities
+     * of the same date both pool (`Support\HostResolution`).
+     *
      * @param  Builder<static>  $query
      */
     private function resolvedPool(Builder $query): ?QueryBuilder
@@ -305,7 +311,7 @@ class Slot extends Model
             ->get()
             ->keyBy(fn (Availability $availability): string => (string) $availability->getKey());
 
-        $resolver = app(HostResolver::class);
+        $resolution = new HostResolution;
         $values = null;
         $seen = [];
 
@@ -317,7 +323,7 @@ class Slot extends Model
                 continue;
             }
 
-            foreach ($resolver->resolve($host, $availability->starts_at, $availability->context) as $holder) {
+            foreach ($resolution->holders($host, $availability->starts_at, $availability->context) as $holder) {
                 $row = [$member->availability_id, $holder->getMorphClass(), (string) $holder->getKey()];
                 $key = implode('|', $row);
 

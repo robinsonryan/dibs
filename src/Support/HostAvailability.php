@@ -10,7 +10,6 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
-use RobinsonRyan\Dibs\Contracts\HostResolver;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\AvailabilityHost;
 use RobinsonRyan\Dibs\Models\Booking;
@@ -128,7 +127,11 @@ final class HostAvailability
 
         $pool->load('host');
 
-        $holders = self::resolvePool($pool, $at instanceof CarbonInterface ? $at : $slot->starts_at, $availability->context);
+        $holders = self::resolvePool(
+            $pool,
+            $at instanceof CarbonInterface ? $at : $slot->starts_at,
+            $availability->context,
+        );
 
         if ($holders === []) {
             return new Collection;
@@ -153,12 +156,17 @@ final class HostAvailability
      * availability's context rides along, because a pooled position may be a
      * catalog row several contexts share.
      *
+     * The resolver is asked once per distinct entry, whatever the pool's shape:
+     * two rows naming one position — the same calling in two roles — are one
+     * question (`Support\HostResolution`), and the memo lives and dies with
+     * this one call.
+     *
      * @param  EloquentCollection<int, AvailabilityHost>  $pool
      * @return array<string, Model>
      */
     private static function resolvePool(EloquentCollection $pool, CarbonInterface $at, ?Model $context): array
     {
-        $resolver = app(HostResolver::class);
+        $resolution = new HostResolution;
         $holders = [];
 
         foreach ($pool as $member) {
@@ -168,7 +176,7 @@ final class HostAvailability
                 continue;
             }
 
-            foreach ($resolver->resolve($host, $at, $context) as $holder) {
+            foreach ($resolution->holders($host, $at, $context) as $holder) {
                 $holders[self::key($holder->getMorphClass(), (string) $holder->getKey())] ??= $holder;
             }
         }
