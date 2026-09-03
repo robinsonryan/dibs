@@ -33,7 +33,8 @@ final class OverlapCheck
     /**
      * The same question asked of a slot about to be claimed, which is why the
      * slot's own bookings are not counted: one host seating two attendees in a
-     * shared capacity-N slot is not double-booked with themselves (R19).
+     * shared capacity-N slot is not double-booked with themselves (R19) —
+     * unless hosts are exclusive (D18), when they are.
      *
      * @return Collection<int, Booking>
      */
@@ -41,9 +42,29 @@ final class OverlapCheck
     {
         $booking = Dibs::make(Booking::class);
 
-        return self::query($host, $slot->starts_at, $slot->ends_at)
-            ->where($booking->qualifyColumn('slot_id'), '!=', (string) $slot->getKey())
-            ->get();
+        $query = self::query($host, $slot->starts_at, $slot->ends_at);
+
+        if (! self::hostsAreExclusive()) {
+            $query->where($booking->qualifyColumn('slot_id'), '!=', (string) $slot->getKey());
+        }
+
+        return $query->get();
+    }
+
+    /**
+     * Whether a live booking on the very slot being asked about makes its host
+     * busy for that slot — `config('dibs.exclusive_hosts')`, and the one place
+     * the package reads it (D18).
+     *
+     * Off by default, which is the R19 rule: one host may seat several
+     * attendees in one capacity-N session. On when an appointment is
+     * one-to-one, and then a host already claimed on the slot stops counting
+     * towards its capacity, drops out of `freeHolders`, and is refused by the
+     * `guardHostOverlap` assignment guard.
+     */
+    public static function hostsAreExclusive(): bool
+    {
+        return (bool) config('dibs.exclusive_hosts', false);
     }
 
     /**

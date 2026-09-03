@@ -82,7 +82,7 @@ final class HostAvailability
      */
     public static function freeHosts(Availability $availability, Slot $slot, string $role = 'host'): Collection
     {
-        return self::resolvedFreeHolders($availability, $slot, $role, null);
+        return self::resolvedFreeHolders($availability, $slot, $role, null, null);
     }
 
     /**
@@ -94,17 +94,23 @@ final class HostAvailability
      * `$at` names the moment the pool is resolved at, defaulting to the slot's
      * own start; freeness is always measured across the slot itself.
      *
+     * `$exclusiveHosts` overrides `config('dibs.exclusive_hosts')` (D18) for
+     * this one question: false means a claim on `$slot` itself never makes its
+     * host busy for it, which is what the booking gate asks — it subtracts the
+     * slot's own claims by counting them, and counting them here as well would
+     * take a three-person slot down to two appointments.
+     *
      * @return Collection<int, Model>
      */
-    public static function freeHolders(Availability $availability, Slot $slot, ?CarbonInterface $at = null): Collection
+    public static function freeHolders(Availability $availability, Slot $slot, ?CarbonInterface $at = null, ?bool $exclusiveHosts = null): Collection
     {
-        return self::resolvedFreeHolders($availability, $slot, null, $at);
+        return self::resolvedFreeHolders($availability, $slot, null, $at, $exclusiveHosts);
     }
 
     /**
      * @return Collection<int, Model>
      */
-    private static function resolvedFreeHolders(Availability $availability, Slot $slot, ?string $role, ?CarbonInterface $at): Collection
+    private static function resolvedFreeHolders(Availability $availability, Slot $slot, ?string $role, ?CarbonInterface $at, ?bool $exclusiveHosts): Collection
     {
         $availabilityHost = Dibs::make(AvailabilityHost::class);
 
@@ -128,7 +134,7 @@ final class HostAvailability
             return new Collection;
         }
 
-        $busy = self::busyAssignments($slot);
+        $busy = self::busyAssignments($slot, $exclusiveHosts ?? OverlapCheck::hostsAreExclusive());
 
         $free = [];
 
@@ -177,17 +183,20 @@ final class HostAvailability
      * Bookings on `$slot` itself do not count (D15/B38): a host seating two
      * attendees in one capacity-N slot is not double-booked with themselves,
      * which is the same rule `OverlapCheck::forSlot` applies at booking time.
+     * With `$exclusiveHosts` they do count (D18) — an interview cannot be
+     * shared, so a host with a claim on the slot is busy for it.
      *
      * @return Collection<int, string>
      */
-    private static function busyAssignments(Slot $slot): Collection
+    private static function busyAssignments(Slot $slot, bool $exclusiveHosts): Collection
     {
         $booking = Dibs::make(Booking::class);
         $assignment = Dibs::make(BookingHost::class);
 
         $overlapping = Dibs::query(Booking::class)
             ->active()
-            ->where($booking->qualifyColumn('slot_id'), '!=', (string) $slot->getKey())
+            ->when(! $exclusiveHosts, fn (Builder $bookings): Builder => $bookings
+                ->where($booking->qualifyColumn('slot_id'), '!=', (string) $slot->getKey()))
             ->whereHas('slot', fn (Builder $slots): Builder => OverlapCheck::overlappingSlots(
                 $slots,
                 $slot->starts_at,

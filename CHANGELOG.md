@@ -7,6 +7,42 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-03
+
+### Changed
+
+- **A pooled slot's capacity is who is free** (spec D18). `BookSlot` now gates a
+  slot whose availability has a host pool on `Slot::capacityFor()` — the people
+  the pool resolves to with nothing booked across the slot elsewhere — and no
+  longer on the `capacity` column, which from here on decides only slots with no
+  pool. Three free interviewers at six o'clock are three appointments at six
+  o'clock however the column reads; a pool that resolves to nobody, or whose
+  every member is booked across the slot, refuses the first claim. The slot's
+  `booked` status settles against the same number.
+
+  Two consequences for consumers that pool hosts: a capacity-N pooled slot no
+  longer takes N claims unless N people are free for it, and a pooled slot whose
+  only holder is double-booked is now refused with `SlotUnavailable` before the
+  opt-in `guardHostOverlap` check can report `HostOverlap`. Slots with no pool —
+  adhoc slots and availabilities nobody was pooled on — are unchanged.
+
+### Added
+
+- **`exclusive_hosts` config key** (default `false`), the second half of D18:
+  with it on, a live booking on the very slot being asked about makes its host
+  busy for that slot, so a host with a claim on it stops counting towards its
+  capacity, drops out of `HostAvailability::freeHolders` and
+  `Slot::bookable(requireFreeHost: true)`, and is refused by
+  `AssignBookingHost(guardHostOverlap: true)`. Off is the behaviour the package
+  always had — one host may seat several attendees in one session; on is what a
+  one-to-one appointment needs. It is read in one place,
+  `Support\OverlapCheck::hostsAreExclusive()`, so every reading of "busy"
+  honours it.
+- `HostAvailability::freeHolders()` takes a fourth argument,
+  `?bool $exclusiveHosts = null`, overriding the config for one question. The
+  booking gate asks with it `false`, because it subtracts the slot's own claims
+  by counting them and must not subtract them twice.
+
 ## [0.3.1] - 2026-09-03
 
 ### Changed

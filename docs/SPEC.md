@@ -58,9 +58,10 @@ cutting it loose from its series when history stops it being deleted.
 | D12 | Offers hold capacity-1 slots only in v1 (holding one unit of a capacity-N slot is deferred). |
 | D13 | Booking `type` is a consumer-defined string, denormalized onto the booking at creation (default: the availability's `type`) so bookings survive availability edits. |
 | D14 | **Host assignment is mutable after booking, one host per role.** Auto-assign (D9) is a convenience, not a commitment: a booking's host for a given role can be set, replaced or cleared afterwards by `AssignBookingHost` / `UnassignBookingHost`, so a pool member can take an unassigned booking and an administrator can reassign one. Assigning is a **replace**, never an add — a role holds at most one host on a booking (the many-to-many of D7 is across roles, not within one). Consumers never write `dibs_booking_hosts` rows themselves. A cancelled booking is frozen; a completed or no-show one may still have its record corrected (added 2026-09-01). |
-| D15 | **Host availability is a query, never a solver** (D8 stands). The package answers three questions about a host's time and no others: is this host busy in a window, which of an availability's pool is free during a slot, and which slots have nobody free. All three read the same overlap predicate as the R18 booking-time guard — half-open `[starts_at, ends_at)`, so a booking that ends exactly when another starts does not conflict — and all three ignore bookings **on the slot being asked about**, because one host seating two attendees in a shared capacity-N slot is not double-booked with themselves (the R19 rule). The free-host filter on `Slot::bookable()` is **opt-in and role-agnostic**: a slot is excluded only when its availability has a host pool and no member of that pool is free; an availability with no pool is never excluded, because there is nobody to be busy (added 2026-09-01). |
+| D15 | **Host availability is a query, never a solver** (D8 stands). The package answers three questions about a host's time and no others: is this host busy in a window, which of an availability's pool is free during a slot, and which slots have nobody free. All three read the same overlap predicate as the R18 booking-time guard — half-open `[starts_at, ends_at)`, so a booking that ends exactly when another starts does not conflict — and all three ignore bookings **on the slot being asked about**, because one host seating two attendees in a shared capacity-N slot is not double-booked with themselves (the R19 rule) — unless `exclusive_hosts` is on, when they count (D18). The free-host filter on `Slot::bookable()` is **opt-in and role-agnostic**: a slot is excluded only when its availability has a host pool and no member of that pool is free; an availability with no pool is never excluded, because there is nobody to be busy (added 2026-09-01). |
 | D16 | **Recurrence is a materialised series** (2026-09-03, reversing D5/N1). A `Series` holds the rule — weekday windows as wall-clock minutes, a cadence (`weekly` / `fortnightly` / `monthly-ordinal` / `once`) with Sunday-based week indices counted from the week containing `starts_on`, a date range, geometry, place, and a pool — and `MaterialiseSeries` lays it down as ordinary `Availability` rows, one per window per matching date. Nothing else in the package learns what a series is: booking, offers, the overlap guard, geometry edits and deletion all keep working on rows. An occurrence is keyed `(series_id, occurs_on, window_index)`, which is what makes materialisation idempotent without a diff. Edits bump `rule_version` and regenerate rather than diffing, and regeneration refuses three things: the past, a **detached** occurrence (`detached_at`, hand-edited on purpose), and one carrying a **live booking** (the consumer settles those first, via `FindSeriesConflicts` and then cancellation or `ReparentSlotAsAdhoc`). An occurrence whose bookings are all *spent* cannot be deleted (D3) and is **released** instead — closed and cut loose from the series (`series_id` nulled) — so its history stands and its date is free. |
 | D17 | **A pool entry stands for people, at a moment** (2026-09-03). `Contracts\HostResolver` turns one pool entry into the models it represents at a stated instant, in a stated context: none (vacant), one, or several (a position with more than one seat). The context is the availability's own (`resolve(Model $host, CarbonInterface $at, ?Model $context = null)`, added 0.3.1) because a position is often a catalog row several tenants share, and who holds it cannot be answered without knowing which tenant is asking. It exists so a consumer can pool a *position* — a calling, a rota, a desk — and have a set of times opened months ahead survive the holder changing. The default binding is identity, so a consumer that pools people sees no change. It is consulted by `HostAvailability::freeHosts`/`freeHolders`, `Slot::bookable(requireFreeHost:)` and `Slot::capacityFor()`; it is **not** consulted by `busyBookings`/`isFree`, which ask about a host that is already concrete, nor by assignment, which stays the consumer's (D8/D9). A pool that resolves to nobody is vacant: zero capacity, and no bookable slot. |
+| D18 | **A pooled slot's capacity is who is free** (2026-09-03). `BookSlot` gates a slot whose availability has a pool on the people that pool resolves to (D17) with nothing booked across it elsewhere — `Slot::capacityFor()` — and not on the `capacity` column, which from here on decides only slots with no pool behind them. Three free interviewers at six o'clock are three appointments at six o'clock however the column reads; a pool that resolves to nobody, or whose every member is booked across the slot, refuses the first claim. The gate asks the question with `exclusive_hosts` off whatever the config says, because it already subtracts the slot's own claims by counting them. **`exclusive_hosts`** (`config/dibs.php`, default `false`) is the second half: with it on, a live booking on the very slot being asked about *does* make its host busy for that slot, so a host with one claim on it stops counting towards its capacity, drops out of `freeHolders` and `bookable(requireFreeHost:)`, and is refused by `AssignBookingHost(guardHostOverlap: true)`. Off is the R19 rule the package always had (one host, several attendees, one session); on is what a one-to-one appointment needs — an interview cannot be shared. The flag lives in one place, `Support\OverlapCheck::hostsAreExclusive()`, so every reading of "busy" honours it. |
 
 ## 4. Data model
 
@@ -101,7 +102,7 @@ the key that makes materialisation idempotent. Index `(series_id, occurs_on)`.
 | `availability_id` | fk nullable → availabilities, cascadeOnDelete | null = adhoc |
 | `starts_at` / `ends_at` | timestampTz | |
 | `location` | string nullable | overrides availability's; required source of truth for adhoc slots |
-| `capacity` | unsigned smallint | default 1 |
+| `capacity` | unsigned smallint | default 1; decides slots with no host pool (D18) |
 | `status` | string | `open` / `held` / `booked` (`booked` = full) / `retired` |
 | timestamps | | |
 
@@ -207,9 +208,11 @@ each firing its event **after commit** (`DB::afterCommit`). Invalid state transi
   1. `SELECT … FOR UPDATE` on the slot row inside the transaction.
   2. Validate: slot `open` (or `held` when reached via AcceptOffer), availability `published`, slot
      start in the future, `min_notice`/`max_horizon` satisfied (skipped on the offer path, D11),
-     remaining capacity > 0.
+     remaining capacity > 0 — where the capacity of a slot whose availability has a pool is the
+     number of people that pool resolves to who are free across it (D18), and the `capacity`
+     column only for a slot with no pool.
   3. Create the booking (status `booked`, `type` per D13); set slot `status = booked` when active
-     bookings reach capacity.
+     bookings reach that same capacity.
   4. Auto-assign per D9.
   5. Optional overlap guard (`guardHostOverlap: true`): if any pooled/assigned host has an overlapping
      active booking, throw `HostOverlap` (it is a query, not a solver — D8). The check helper
@@ -259,7 +262,8 @@ check as a values list, so it is no longer a single statement — but the number
 and does not grow with the number of slots. It is off by default, so `bookable()` on its own means
 exactly what it meant before. `Slot::capacityFor($now)` is the same question asked of one slot as a
 number: the people its pool resolves to with nothing else booked across it, falling back to the
-slot's own `capacity` column when there is no pool at all.
+slot's own `capacity` column when there is no pool at all. It is also what `BookSlot` gates a
+pooled slot on (D18).
 
 ### 5.5 Host availability (D15)
 
@@ -274,9 +278,11 @@ slot's own `capacity` column when there is no pool at all.
   stands for who are free during the slot, returned as the **host models** in pool order. Every entry
   goes through the bound `HostResolver` at the slot's start (D17), and two entries resolving to the
   same person yield that person once. It never picks one: choosing is the consumer's (D8).
-- `freeHolders($availability, $slot, $at = null)` — the same across the whole pool whatever role each
-  entry fills, which is the role-agnostic reading `bookable(requireFreeHost:)` and `capacityFor()`
-  take. `$at` names the moment the pool is resolved at, defaulting to the slot's start.
+- `freeHolders($availability, $slot, $at = null, $exclusiveHosts = null)` — the same across the whole
+  pool whatever role each entry fills, which is the role-agnostic reading `bookable(requireFreeHost:)`
+  and `capacityFor()` take. `$at` names the moment the pool is resolved at, defaulting to the slot's
+  start. `$exclusiveHosts` overrides `config('dibs.exclusive_hosts')` for one question and is how the
+  booking gate asks it with the flag off (D18).
 
 `busyBookings` and `isFree` resolve nothing: they ask about a host that is already concrete.
 
@@ -342,6 +348,8 @@ notifications, reminders, and workflow side effects (e.g. ccstake's calling foll
 - `models` class-map: consumers may substitute extended models (must extend the package's) —
   `Series`, `SeriesWindow` and `SeriesHost` included.
 - `token_length` (default 48).
+- `exclusive_hosts` (default `false`): whether a live booking on a slot makes its host busy for
+  that same slot (D18). Read in one place, `Support\OverlapCheck::hostsAreExclusive()`.
 - `Contracts\HostResolver` is bound in the service provider to `Support\IdentityHostResolver`
   with `bind()`, so a consumer replaces it with one line of its own (D17). It is a container
   binding rather than a config key on purpose: it is behaviour, not a value.
@@ -432,6 +440,8 @@ per the `verification` skill before any "done" claim.
 | R64 | `Contracts\HostResolver` returns a collection, defaults to identity through `Support\IdentityHostResolver`, and is bound with `bind()` so a consumer overrides it | `Contracts\HostResolver`, `Support\IdentityHostResolver`, `DibsServiceProvider::register()` | `tests/Feature/Series/HostResolverTest.php` identity case | Done |
 | R66 | `HostResolver::resolve()` is told the availability's context, so one catalog position resolves to different people for two contexts, in capacity, `freeHolders` and the `bookable(requireFreeHost:)` filter alike | `Contracts\HostResolver`, `Support\IdentityHostResolver`, `Support\HostAvailability::resolvePool()`, `Slot::resolvedPool()` | `HostResolverTest` "resolves the same pool entry to different people for two contexts" | Done |
 | R65 | `freeHosts`/`freeHolders`, `bookable(requireFreeHost:)` and `capacityFor()` read resolved holders: one entry standing for two people gives capacity 2, one standing for nobody gives 0 and an unbookable slot, a resolved person booked across the slot is not free, and two entries for one person count once | `Support\HostAvailability`, `Slot::capacityFor()`, `Slot::scopeBookable()` | `HostResolverTest` (10 cases), `tests/Feature/Foundation/BookableFreeHostTest.php` | Done |
+| R67 | `BookSlot` gates a pooled slot on who is free, not on the `capacity` column: a capacity-1 slot whose pool resolves to three free people takes three claims and refuses the fourth, flipping to `booked` only on the third; a pool that resolves to nobody, or whose only holder is booked across the slot, refuses the first; a slot with no pool still gates on the column. Two connections contending for a pooled slot with two free people both win; with one free person exactly one does | `Actions\BookSlot::capacityOf()` (used by the capacity check and the settle step), `Slot::capacityFor()` | `tests/Feature/Booking/PooledCapacityTest.php`, `tests/Concurrency/BookSlotConcurrencyTest.php` pooled cases | Done |
+| R68 | `config('dibs.exclusive_hosts')` (default `false`) makes a booking on the slot being asked about count against its own host, in one definition (`Support\OverlapCheck::hostsAreExclusive()`) that `freeHolders`, `capacityFor()`, `bookable(requireFreeHost:)` and `AssignBookingHost(guardHostOverlap: true)` all read. Default off leaves the R19 behaviour exactly as it was | `Support\OverlapCheck`, `Support\HostAvailability::busyAssignments()`, `Slot::scopeBookable()`, `config/dibs.php` | `PooledCapacityTest.php` exclusive-host cases | Done |
 
 ## 9a. Non-goals (explicit exclusions)
 

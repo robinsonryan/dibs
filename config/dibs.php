@@ -53,6 +53,21 @@ return [
 
     /*
     |---------------------------------------------------------------------------
+    | Exclusive hosts
+    |---------------------------------------------------------------------------
+    |
+    | Whether a live booking on a slot makes its host busy for that same slot.
+    | Off by default: one host may seat several attendees in one capacity-N
+    | session, so the slot being asked about is never its own conflict. Turn it
+    | on when an appointment is one-to-one - an interview cannot be shared - and
+    | a host with a claim on the slot stops counting towards its capacity.
+    |
+    */
+
+    'exclusive_hosts' => false,
+
+    /*
+    |---------------------------------------------------------------------------
     | Offer token length
     |---------------------------------------------------------------------------
     |

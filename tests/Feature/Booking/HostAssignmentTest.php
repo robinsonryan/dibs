@@ -73,6 +73,9 @@ it('does not guard host overlap by default (R18)', function (): void {
     $availability = Availability::factory()->published()->create();
     $alice = user('Alice');
     AvailabilityHost::factory()->for($availability)->host($alice, 'interviewer')->create();
+    // A pooled slot's capacity is who is free (D18), so the pool needs a member
+    // nobody has spoken for, or the slot is refused before the guard is reached.
+    AvailabilityHost::factory()->for($availability)->host(room('Bishop’s office'), 'room')->create();
 
     $slot = Slot::factory()->for($availability)->create();
     $clash = Slot::factory()->adhoc()->at($slot->starts_at)->create();
@@ -81,13 +84,17 @@ it('does not guard host overlap by default (R18)', function (): void {
 
     $member = user('Member');
 
-    expect((new BookSlot)($slot, $member, $member)->hosts()->count())->toBe(1);
+    // Alice is double-booked and assigned anyway: nothing asked.
+    expect((new BookSlot)($slot, $member, $member)->hosts()->count())->toBe(2);
 });
 
 it('throws HostOverlap when the guard is on and an assigned host is double-booked (R18)', function (): void {
     $availability = Availability::factory()->published()->create();
     $alice = user('Alice');
     AvailabilityHost::factory()->for($availability)->host($alice, 'interviewer')->create();
+    // A pooled slot's capacity is who is free (D18), so the pool needs a member
+    // nobody has spoken for, or the slot is refused before the guard is reached.
+    AvailabilityHost::factory()->for($availability)->host(room('Bishop’s office'), 'room')->create();
 
     $slot = Slot::factory()->for($availability)->create();
     $clash = Slot::factory()->adhoc()->at($slot->starts_at)->create();
@@ -125,19 +132,21 @@ it('books with the guard on when the assigned host is free', function (): void {
 });
 
 it('does not count the very slot being claimed as the host’s own conflict (R19)', function (): void {
-    // One interviewer, one shared slot with room for two: the second attendee
-    // is not clashing with the first, they are sitting in the same session.
+    // One interviewer and one room, both free, so the slot seats two (D18):
+    // the second attendee is not clashing with the first over Alice, they are
+    // sitting in the same session.
     $availability = Availability::factory()->published()->create();
     $alice = user('Alice');
     AvailabilityHost::factory()->for($availability)->host($alice, 'interviewer')->create();
+    AvailabilityHost::factory()->for($availability)->host(room('Bishop’s office'), 'room')->create();
 
-    $slot = Slot::factory()->for($availability)->capacity(2)->create();
+    $slot = Slot::factory()->for($availability)->create();
 
     $first = (new BookSlot)($slot->fresh(), user('Member One'), user('Member One'), new BookingOptions(guardHostOverlap: true));
     $second = (new BookSlot)($slot->fresh(), user('Member Two'), user('Member Two'), new BookingOptions(guardHostOverlap: true));
 
-    expect($first->hosts()->count())->toBe(1)
-        ->and($second->hosts()->count())->toBe(1)
+    expect($first->hosts()->count())->toBe(2)
+        ->and($second->hosts()->count())->toBe(2)
         ->and(Booking::active()->count())->toBe(2)
         ->and($slot->fresh()->status->value)->toBe('booked');
 });
@@ -146,8 +155,11 @@ it('still refuses when the clash is on a different overlapping slot (R19)', func
     $availability = Availability::factory()->published()->create();
     $alice = user('Alice');
     AvailabilityHost::factory()->for($availability)->host($alice, 'interviewer')->create();
+    // A pooled slot's capacity is who is free (D18), so the pool needs a member
+    // nobody has spoken for, or the slot is refused before the guard is reached.
+    AvailabilityHost::factory()->for($availability)->host(room('Bishop’s office'), 'room')->create();
 
-    $slot = Slot::factory()->for($availability)->capacity(2)->create();
+    $slot = Slot::factory()->for($availability)->create();
     $clash = Slot::factory()->adhoc()->at($slot->starts_at)->create();
     $existing = Booking::factory()->for($clash, 'slot')->bookedFor(user('Someone'))->create();
     BookingHost::factory()->for($existing)->host($alice, 'interviewer')->create();

@@ -7,6 +7,8 @@ use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Actions\BookSlot;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Exceptions\SlotUnavailable;
+use RobinsonRyan\Dibs\Models\Availability;
+use RobinsonRyan\Dibs\Models\AvailabilityHost;
 use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\Slot;
 
@@ -107,6 +109,96 @@ it('lets exactly one of two contending sessions take the last unit of capacity (
     $b->statement('set lock_timeout = 0');
 
     expect(fn (): Booking => (new BookSlot)($slot->fresh(), $bob, $bob))
+        ->toThrow(SlotUnavailable::class);
+
+    DB::setDefaultConnection('testing');
+
+    expect(Booking::active()->count())->toBe(1)
+        ->and(Booking::active()->first()->id)->toBe($booking->id)
+        ->and($slot->fresh()->status)->toBe(SlotStatus::Booked);
+});
+
+it('lets two contending sessions into a pooled slot while two people are free (R67)', function (): void {
+    // The capacity column says one; the pool says two are free, and the pool
+    // is what a pooled slot is measured by.
+    $availability = Availability::factory()->published()->create();
+    AvailabilityHost::factory()->for($availability)->host(user('Alice'), 'interviewer')->create();
+    AvailabilityHost::factory()->for($availability)->host(user('Bob'), 'interviewer')->create();
+    $slot = Slot::factory()->for($availability)->create();
+
+    $ann = user('Ann');
+    $bea = user('Bea');
+    $cal = user('Cal');
+
+    $a = DB::connection('testing');
+    $b = DB::connection('testing_b');
+
+    // Session A takes the first of the two, transaction still open.
+    $a->beginTransaction();
+    (new BookSlot)($slot->fresh(), $ann, $ann);
+
+    // Session B must wait for A rather than read around it.
+    DB::setDefaultConnection('testing_b');
+    $b->statement("set lock_timeout = '300ms'");
+
+    try {
+        (new BookSlot)($slot->fresh(), $bea, $bea);
+        $this->fail('Expected session B to block on the row session A is booking.');
+    } catch (QueryException $blocked) {
+        expect((string) $blocked->getCode())->toBe('55P03');
+    }
+
+    DB::setDefaultConnection('testing');
+    $a->commit();
+
+    // Both people were free, so B takes the second one.
+    DB::setDefaultConnection('testing_b');
+    $b->statement('set lock_timeout = 0');
+    (new BookSlot)($slot->fresh(), $bea, $bea);
+
+    // And there is no third person to take a third claim.
+    expect(fn (): Booking => (new BookSlot)($slot->fresh(), $cal, $cal))
+        ->toThrow(SlotUnavailable::class);
+
+    DB::setDefaultConnection('testing');
+
+    expect(Booking::active()->count())->toBe(2)
+        ->and($slot->fresh()->status)->toBe(SlotStatus::Booked);
+});
+
+it('lets exactly one of two contending sessions into a pooled slot with one person free (R67)', function (): void {
+    $availability = Availability::factory()->published()->create();
+    AvailabilityHost::factory()->for($availability)->host(user('Alice'), 'interviewer')->create();
+    $slot = Slot::factory()->for($availability)->create();
+
+    $ann = user('Ann');
+    $bea = user('Bea');
+
+    $a = DB::connection('testing');
+    $b = DB::connection('testing_b');
+
+    $a->beginTransaction();
+    $booking = (new BookSlot)($slot->fresh(), $ann, $ann);
+
+    DB::setDefaultConnection('testing_b');
+    $b->statement("set lock_timeout = '300ms'");
+
+    try {
+        (new BookSlot)($slot->fresh(), $bea, $bea);
+        $this->fail('Expected session B to block on the row session A is booking.');
+    } catch (QueryException $blocked) {
+        expect((string) $blocked->getCode())->toBe('55P03');
+    }
+
+    DB::setDefaultConnection('testing');
+    $a->commit();
+
+    // One person, one appointment: B reads the truth under its own lock and is
+    // refused.
+    DB::setDefaultConnection('testing_b');
+    $b->statement('set lock_timeout = 0');
+
+    expect(fn (): Booking => (new BookSlot)($slot->fresh(), $bea, $bea))
         ->toThrow(SlotUnavailable::class);
 
     DB::setDefaultConnection('testing');

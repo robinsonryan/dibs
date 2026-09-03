@@ -22,6 +22,7 @@ use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\BookingHost;
 use RobinsonRyan\Dibs\Models\Slot;
 use RobinsonRyan\Dibs\Support\Dibs;
+use RobinsonRyan\Dibs\Support\HostAvailability;
 use RobinsonRyan\Dibs\Support\OverlapCheck;
 
 /**
@@ -77,7 +78,7 @@ final class BookSlot
             ]);
         }
 
-        $this->settle($locked);
+        $this->settle($locked, $availability);
 
         $booking->load(['slot.availability', 'hosts', 'bookedFor', 'bookedBy']);
 
@@ -119,9 +120,32 @@ final class BookSlot
             $this->assertInsideNoticeWindow($slot, $availability, $now);
         }
 
-        if ($slot->activeBookings()->count() >= $slot->capacity) {
+        if ($slot->activeBookings()->count() >= $this->capacityOf($slot, $availability)) {
             throw SlotUnavailable::for($slot, 'it is fully booked');
         }
+    }
+
+    /**
+     * How many claims this slot can take, read under its row lock.
+     *
+     * A pooled slot is measured by who is free (D18): the people its
+     * availability's pool resolves to with nothing booked across it elsewhere.
+     * Three free interviewers at six o'clock are three appointments at six
+     * o'clock, whatever the `capacity` column says — the column decides only
+     * slots with no pool behind them, where there is nobody to be busy.
+     *
+     * The question is asked with `exclusive_hosts` off whatever the config
+     * says, because the caller subtracts this slot's own claims by counting
+     * them: letting them take a holder out here as well would cost the slot an
+     * appointment for every one it already has.
+     */
+    private function capacityOf(Slot $slot, ?Availability $availability): int
+    {
+        if (! $availability instanceof Availability || $availability->hosts->isEmpty()) {
+            return $slot->capacity;
+        }
+
+        return HostAvailability::freeHolders($availability, $slot, null, false)->count();
     }
 
     /**
@@ -271,9 +295,9 @@ final class BookSlot
     /**
      * The slot's status is an account of its live claims, never a cached guess.
      */
-    private function settle(Slot $slot): void
+    private function settle(Slot $slot, ?Availability $availability): void
     {
-        $status = $slot->activeBookings()->count() >= $slot->capacity
+        $status = $slot->activeBookings()->count() >= $this->capacityOf($slot, $availability)
             ? SlotStatus::Booked
             : SlotStatus::Open;
 

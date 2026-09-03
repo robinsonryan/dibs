@@ -40,6 +40,7 @@ php artisan vendor:publish --tag=dibs-migrations   # once published, the package
 | `table_prefix` | `dibs_` | Prefix for the seven tables the package owns. |
 | `models` | package classes | Class-map: substitute a subclass of any package model; every relationship and query the package runs resolves through it. |
 | `token_length` | `48` | Length of an offer's link token (never below 40). |
+| `exclusive_hosts` | `false` | Whether a booking on a slot makes its host busy for that same slot. Off: one host may seat several attendees in one session. On: an appointment is one-to-one, so a host with a claim on the slot stops counting towards its capacity. |
 
 There is deliberately no timezone, permission or notification configuration.
 
@@ -112,7 +113,8 @@ use RobinsonRyan\Dibs\Models\Slot;
 $slots = Slot::bookable()->whereHas('availability', fn ($q) => $q->where('type', 'temple-recommend'))->get();
 
 $booking = (new BookSlot)($slot, bookedFor: $member, bookedBy: $member);
-// row-locked; validates open + published + future + notice/horizon + capacity;
+// row-locked; validates open + published + future + notice/horizon + capacity, where a
+// pooled slot's capacity is how many of its pool are free, not its capacity column;
 // a pool of exactly one host per role is auto-assigned; fires BookingCreated
 
 (new BookSlot)($slot, $member, $clerk, new BookingOptions(guardHostOverlap: true, type: 'calling-meeting'));
@@ -192,7 +194,9 @@ already concrete.
 Intervals are half-open: a booking that ends exactly when the next one starts does not
 conflict. A booking on the slot being asked about never counts against its own host —
 one host seating two attendees in a shared capacity-N slot is not double-booked with
-themselves.
+themselves. Set `exclusive_hosts` to `true` when an appointment is one-to-one and it
+does count: a host with a claim on the slot is then busy for it, everywhere the package
+asks who is free.
 
 The same question, asked of a whole list of slots:
 
@@ -310,6 +314,11 @@ $slot->capacityFor($at);       // ...resolved at another moment; defaults to the
 
 A slot with no pool at all falls back to its own `capacity` column — there is nobody to be
 busy.
+
+This number is also the one `BookSlot` books against: a pooled slot takes one appointment
+per free person and the `capacity` column is not consulted, so three free interviewers at
+six o'clock are three appointments at six o'clock, and a pool that resolves to nobody takes
+none.
 
 ### Offer
 

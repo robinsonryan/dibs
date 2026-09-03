@@ -23,6 +23,7 @@ use RobinsonRyan\Dibs\Enums\SlotOrigin;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Support\Dibs;
 use RobinsonRyan\Dibs\Support\HostAvailability;
+use RobinsonRyan\Dibs\Support\OverlapCheck;
 use RobinsonRyan\Dibs\Support\TablePrefixer;
 
 /**
@@ -152,6 +153,13 @@ class Slot extends Model
      * nobody to be busy. A pool that resolves to nobody is vacant and returns
      * zero, which is also when `bookable(requireFreeHost: true)` drops it.
      *
+     * This is the number `BookSlot` gates a pooled slot on (D18): the `capacity`
+     * column decides only unpooled slots, so three free interviewers at six
+     * o'clock are three appointments at six o'clock however the column reads.
+     * The gate asks it with `exclusive_hosts` off, because it subtracts the
+     * slot's own claims by counting them; here the config stands, so a host
+     * already claimed on the slot drops out when hosts are exclusive.
+     *
      * `$now` names the moment the pool is resolved at, defaulting to this
      * slot's start — who holds the position when the appointment happens.
      */
@@ -249,17 +257,25 @@ class Slot extends Model
                 $member
                     ->fromSub($resolved, 'pool')
                     ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id'))
-                    ->whereNotExists(fn (QueryBuilder $busy): QueryBuilder => $busy
-                        ->fromSub($this->busyHosts(), 'busy')
-                        ->whereColumn('busy.host_type', 'pool.host_type')
-                        ->whereColumn('busy.host_id', 'pool.host_id')
-                        // A booking on this very slot never makes its own
-                        // host busy for it (D15/B38).
-                        ->whereColumn('busy.slot_id', '!=', $this->qualifyColumn('id'))
-                        // The half-open overlap of OverlapCheck::overlappingSlots,
-                        // restated between two slot rows (B37).
-                        ->whereColumn('busy.starts_at', '<', $this->qualifyColumn('ends_at'))
-                        ->whereColumn('busy.ends_at', '>', $this->qualifyColumn('starts_at')));
+                    ->whereNotExists(function (QueryBuilder $busy): void {
+                        $busy
+                            ->fromSub($this->busyHosts(), 'busy')
+                            ->whereColumn('busy.host_type', 'pool.host_type')
+                            ->whereColumn('busy.host_id', 'pool.host_id')
+                            // The half-open overlap of OverlapCheck::overlappingSlots,
+                            // restated between two slot rows (B37).
+                            ->whereColumn('busy.starts_at', '<', $this->qualifyColumn('ends_at'))
+                            ->whereColumn('busy.ends_at', '>', $this->qualifyColumn('starts_at'));
+
+                        if (OverlapCheck::hostsAreExclusive()) {
+                            return;
+                        }
+
+                        // A booking on this very slot never makes its own host
+                        // busy for it (D15/B38) — unless hosts are exclusive
+                        // (D18), when one claim takes the host out.
+                        $busy->whereColumn('busy.slot_id', '!=', $this->qualifyColumn('id'));
+                    });
             });
         });
     }
