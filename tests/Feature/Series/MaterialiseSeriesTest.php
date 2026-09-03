@@ -3,13 +3,9 @@
 declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Event;
 use RobinsonRyan\Dibs\Actions\CancelBooking;
-use RobinsonRyan\Dibs\Actions\CreateSeries;
 use RobinsonRyan\Dibs\Actions\MaterialiseSeries;
-use RobinsonRyan\Dibs\Data\HostAssignment;
-use RobinsonRyan\Dibs\Data\SeriesSpec;
 use RobinsonRyan\Dibs\Data\WindowSpec;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\Cadence;
@@ -28,43 +24,6 @@ beforeEach(function (): void {
 afterEach(function (): void {
     CarbonImmutable::setTestNow();
 });
-
-/**
- * @param  list<WindowSpec>  $windows
- * @param  list<int>  $ordinals
- */
-function openSeries(
-    array $windows,
-    string $timezone = 'America/Denver',
-    Cadence $cadence = Cadence::Weekly,
-    array $ordinals = [],
-    string $startsOn = '2026-03-01',
-    ?string $endsOn = null,
-    int $duration = 30,
-    int $padding = 0,
-    ?Model $host = null,
-    ?Model $context = null,
-    ?string $location = "Bishop's office",
-    ?int $horizon = null,
-): Series {
-    return (new CreateSeries)(new SeriesSpec(
-        title: 'Sunday evenings',
-        context: $context ?? organization('First Ward'),
-        timezone: $timezone,
-        cadence: $cadence,
-        ordinals: $ordinals,
-        startsOn: CarbonImmutable::parse($startsOn),
-        endsOn: $endsOn === null ? null : CarbonImmutable::parse($endsOn),
-        slotDurationMinutes: $duration,
-        slotPaddingMinutes: $padding,
-        minNoticeMinutes: null,
-        maxHorizonDays: $horizon,
-        location: $location,
-        windows: $windows,
-        hosts: [new HostAssignment($host ?? user('Bishop'), 'interviewer')],
-        meta: ['purposes' => ['temple-recommend']],
-    ));
-}
 
 /**
  * @return list<string>

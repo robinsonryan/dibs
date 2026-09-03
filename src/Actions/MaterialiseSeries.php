@@ -15,6 +15,7 @@ use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Series;
 use RobinsonRyan\Dibs\Models\SeriesWindow;
 use RobinsonRyan\Dibs\Support\Dibs;
+use RobinsonRyan\Dibs\Support\SeriesClock;
 
 /**
  * Lay a rule down as ordinary availabilities, from today to the date asked for.
@@ -26,11 +27,9 @@ use RobinsonRyan\Dibs\Support\Dibs;
  * day left standing by `RegenerateSeries` because it carries a live booking is
  * not duplicated underneath it. Dates before today are never reached at all.
  *
- * This action is the one place in the package that reads a wall clock. A
- * series' windows are minutes from local midnight, so only a date plus the
- * series' timezone can say which instant "6 pm" is — and 6 pm has to stay 6 pm
- * across a daylight-saving change, which a fixed offset cannot do. Everything
- * it writes is a UTC instant, so D10 holds everywhere downstream.
+ * The windows it places are wall clock, which is what `Support\SeriesClock`
+ * is for — the D10 exception, documented there. Everything written out is a
+ * UTC instant.
  */
 final class MaterialiseSeries
 {
@@ -57,7 +56,7 @@ final class MaterialiseSeries
 
             $locked->load(['windows', 'hosts']);
 
-            $dates = $locked->occurrenceDates($this->today($locked), $through);
+            $dates = $locked->occurrenceDates(SeriesClock::today($locked->timezone), $through);
 
             if ($dates === []) {
                 return 0;
@@ -100,8 +99,8 @@ final class MaterialiseSeries
             'context_id' => $series->context_id,
             'name' => $series->title,
             'location' => $series->location,
-            'starts_at' => $this->instant($date, $window->starts_at_minutes, $series->timezone),
-            'ends_at' => $this->instant($date, $window->ends_at_minutes, $series->timezone),
+            'starts_at' => SeriesClock::instantOn($date, $window->starts_at_minutes, $series->timezone),
+            'ends_at' => SeriesClock::instantOn($date, $window->ends_at_minutes, $series->timezone),
             'slot_duration_minutes' => $series->slot_duration_minutes,
             'slot_padding_minutes' => $series->slot_padding_minutes,
             'min_notice_minutes' => $series->min_notice_minutes,
@@ -123,32 +122,6 @@ final class MaterialiseSeries
         }
 
         return (new PublishAvailability)($availability);
-    }
-
-    /**
-     * The instant a local wall clock lands on, on that date, in that zone.
-     *
-     * The date is shifted rather than converted — the calendar date the rule
-     * names is kept, and the clock is then set on it — so the offset the zone
-     * happened to be on when the date was computed never leaks in. An end of
-     * 1440 minutes is midnight the following morning, which is what a window
-     * running to the end of the day means.
-     */
-    private function instant(CarbonImmutable $date, int $minutes, string $timezone): CarbonImmutable
-    {
-        return $date
-            ->shiftTimezone($timezone)
-            ->setTime(intdiv($minutes, 60), $minutes % 60)
-            ->utc();
-    }
-
-    /**
-     * The local date the series is standing on now: materialisation only ever
-     * runs forwards, and "today" is the ward's today, not the server's.
-     */
-    private function today(Series $series): CarbonImmutable
-    {
-        return CarbonImmutable::now($series->timezone)->startOfDay();
     }
 
     /**

@@ -59,11 +59,33 @@ Behavior changes land here in the commit that makes them, not at tag time.
   detached or hand-left day is never remade. Dates before today are never
   reached. Materialises nothing for a paused or ended series. Fires
   `Events\SeriesMaterialised` (with the occurrences created) after commit.
-- The window-to-instant conversion in `MaterialiseSeries` is the single
+- `Actions\UpdateSeries(Series, SeriesSpec): Series` - an edit that moves the
+  rule (windows, cadence, ordinals, dates, duration, padding, place, pool,
+  timezone) bumps `rule_version` and regenerates; an edit that only changes what
+  a day carries (title, meta, notice, horizon) is copied straight onto the
+  future days that follow the series, with no version bump and nobody's booking
+  disturbed.
+- `Actions\RegenerateSeries(Series): int` - remakes every future, following day
+  still stamped with an older rule version, then materialises out to
+  `max_horizon_days` (90 days when the series names none). A day carrying a live
+  booking is left standing for the consumer to settle. A day whose bookings are
+  all spent cannot be deleted (D3) and is **released** instead - closed and cut
+  loose from the series - so its record stands and the date is free for the new
+  rule.
+- `Actions\FindSeriesConflicts(Series, SeriesSpec): Collection<Booking>` - the
+  live future bookings a proposed rule would strand, as a pure read, so the
+  consumer can ask a person before cancelling on their behalf. A shorter horizon
+  is not a conflict; past and detached days are ignored.
+- `Actions\ReparentSlotAsAdhoc(Slot): Slot` - cuts a booked slot loose from its
+  day, keeping the booking, its hosts, its time and its place (copied down from
+  the day when the slot had none), so the day can be remade around it.
+- `Support\SeriesClock` - the one place the package reads a wall clock.
+- The window-to-instant conversion in `Support\SeriesClock` is the single
   sanctioned exception to "UTC instants only" (spec D10): a wall-clock window
   needs the series' timezone to know which instant it is on a given date, and
-  6 pm has to stay 6 pm across a daylight-saving change. Everything written is
-  still a UTC instant.
+  6 pm has to stay 6 pm across a daylight-saving change. `MaterialiseSeries`
+  uses it to place occurrences and `FindSeriesConflicts` to ask the same
+  question backwards. Everything written is still a UTC instant.
 
 ### Changed
 
