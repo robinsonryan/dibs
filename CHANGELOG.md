@@ -49,6 +49,21 @@ Behavior changes land here in the commit that makes them, not at tag time.
   to nobody gives 0.
 - `HostAvailability::freeHolders($availability, $slot, $at = null)` - the
   role-agnostic reading of `freeHosts`, used by capacity.
+- `Actions\CreateSeries(SeriesSpec): Series` - records the rule at version 1
+  and materialises nothing; the consumer says how far ahead to open times.
+- `Actions\MaterialiseSeries(Series, CarbonImmutable $through): int` - lays the
+  rule down as ordinary published availabilities from today to `$through`, one
+  per window per matching date, each with its own copy of the pool. Idempotent:
+  an occurrence is keyed `(series_id, occurs_on, window_index)` and a key that
+  already has a row is skipped, so a second run creates nothing and a booked,
+  detached or hand-left day is never remade. Dates before today are never
+  reached. Materialises nothing for a paused or ended series. Fires
+  `Events\SeriesMaterialised` (with the occurrences created) after commit.
+- The window-to-instant conversion in `MaterialiseSeries` is the single
+  sanctioned exception to "UTC instants only" (spec D10): a wall-clock window
+  needs the series' timezone to know which instant it is on a given date, and
+  6 pm has to stay 6 pm across a daylight-saving change. Everything written is
+  still a UTC instant.
 
 ### Changed
 
