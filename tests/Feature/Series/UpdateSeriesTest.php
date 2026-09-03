@@ -3,20 +3,16 @@
 declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
-use Illuminate\Database\Eloquent\Model;
 use RobinsonRyan\Dibs\Actions\CancelBooking;
 use RobinsonRyan\Dibs\Actions\FindSeriesConflicts;
 use RobinsonRyan\Dibs\Actions\MaterialiseSeries;
 use RobinsonRyan\Dibs\Actions\ReparentSlotAsAdhoc;
 use RobinsonRyan\Dibs\Actions\UpdateSeries;
-use RobinsonRyan\Dibs\Data\HostAssignment;
-use RobinsonRyan\Dibs\Data\SeriesSpec;
 use RobinsonRyan\Dibs\Data\WindowSpec;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\Cadence;
 use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\BookingHost;
-use RobinsonRyan\Dibs\Models\Series;
 use RobinsonRyan\Dibs\Models\Slot;
 
 beforeEach(function (): void {
@@ -26,44 +22,6 @@ beforeEach(function (): void {
 afterEach(function (): void {
     CarbonImmutable::setTestNow();
 });
-
-/**
- * The rule `openSeries()` opens, as a spec, so a test can change one thing
- * about it and hand it back.
- *
- * @param  list<WindowSpec>  $windows
- * @param  list<int>  $ordinals
- */
-function editedSpec(
-    Series $series,
-    array $windows,
-    ?string $title = null,
-    ?Model $host = null,
-    Cadence $cadence = Cadence::Weekly,
-    array $ordinals = [],
-    ?string $endsOn = null,
-    ?int $horizon = null,
-    ?array $meta = null,
-    ?int $notice = null,
-): SeriesSpec {
-    return new SeriesSpec(
-        title: $title ?? $series->title,
-        context: $series->context ?? organization('First Ward'),
-        timezone: $series->timezone,
-        cadence: $cadence,
-        ordinals: $ordinals,
-        startsOn: CarbonImmutable::parse($series->starts_on->format('Y-m-d')),
-        endsOn: $endsOn === null ? null : CarbonImmutable::parse($endsOn),
-        slotDurationMinutes: $series->slot_duration_minutes,
-        slotPaddingMinutes: $series->slot_padding_minutes,
-        minNoticeMinutes: $notice,
-        maxHorizonDays: $horizon,
-        location: $series->location,
-        windows: $windows,
-        hosts: [new HostAssignment($host ?? $series->hosts->first()?->host ?? user('Bishop'), 'interviewer')],
-        meta: $meta ?? $series->meta,
-    );
-}
 
 it('bumps the rule version and remakes every future day when the hours move', function (): void {
     $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);

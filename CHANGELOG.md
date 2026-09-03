@@ -79,6 +79,27 @@ Behavior changes land here in the commit that makes them, not at tag time.
 - `Actions\ReparentSlotAsAdhoc(Slot): Slot` - cuts a booked slot loose from its
   day, keeping the booking, its hosts, its time and its place (copied down from
   the day when the slot had none), so the day can be remade around it.
+- `Actions\PauseSeries(Series): Series` - retires every unclaimed time still
+  ahead, including on days somebody detached (a paused series offers nothing),
+  and leaves booked ones alone.
+- `Actions\ResumeSeries(Series, CarbonImmutable $through): Series` - reopens
+  exactly those rows rather than remaking the days, so nothing can be
+  duplicated, then materialises the dates that came due while it was paused.
+- `Actions\DeleteSeries(Series): void` - refused (`DeletionRefused`) if any of
+  its days ever carried a booking, cancelled ones included; otherwise the rule,
+  its blocks, its pool and its days all go, each day through
+  `DeleteAvailability` so a held slot still refuses in the words it always did.
+- `Actions\DetachOccurrence(Availability): Availability` and
+  `Actions\FollowSeries(Availability): Availability` - take one day out of the
+  rule's hands and put it back. Following marks the day as being on an older
+  rule version and lets `RegenerateSeries` do the rest, so there is one code
+  path that remakes a day.
+- `Actions\SweepSeries(?CarbonInterface $now = null): int` - the nightly job a
+  consumer schedules (the package ships no commands, as with `ExpireOffers`):
+  rolls every open series forward to its horizon, retires the unclaimed times
+  that have passed, and ends a series whose last date has gone by on its own
+  calendar. One series failing does not stop the sweep.
+- Events `SeriesPaused`, `SeriesResumed`, `SeriesDeleted`.
 - `Support\SeriesClock` - the one place the package reads a wall clock.
 - The window-to-instant conversion in `Support\SeriesClock` is the single
   sanctioned exception to "UTC instants only" (spec D10): a wall-clock window

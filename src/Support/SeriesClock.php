@@ -40,6 +40,14 @@ final class SeriesClock
     }
 
     /**
+     * The clock, in UTC — the stamp `detached_at` and its like are written at.
+     */
+    public static function now(): CarbonImmutable
+    {
+        return CarbonImmutable::now('UTC');
+    }
+
+    /**
      * The local date the series is standing on now. Materialisation only ever
      * runs forwards, and "today" is the series' today, not the server's.
      */

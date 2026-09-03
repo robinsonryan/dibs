@@ -88,3 +88,41 @@ function bookFirstSlotOf(Availability $occurrence): Booking
 
     return Booking::factory()->for($slot, 'slot')->bookedFor(user('Member'))->create();
 }
+
+/**
+ * The rule `openSeries()` opens, as a spec, so a test can change one thing
+ * about it and hand it back.
+ *
+ * @param  list<WindowSpec>  $windows
+ * @param  list<int>  $ordinals
+ */
+function editedSpec(
+    Series $series,
+    array $windows,
+    ?string $title = null,
+    ?Model $host = null,
+    Cadence $cadence = Cadence::Weekly,
+    array $ordinals = [],
+    ?string $endsOn = null,
+    ?int $horizon = null,
+    ?array $meta = null,
+    ?int $notice = null,
+): SeriesSpec {
+    return new SeriesSpec(
+        title: $title ?? $series->title,
+        context: $series->context ?? organization('First Ward'),
+        timezone: $series->timezone,
+        cadence: $cadence,
+        ordinals: $ordinals,
+        startsOn: CarbonImmutable::parse($series->starts_on->format('Y-m-d')),
+        endsOn: $endsOn === null ? null : CarbonImmutable::parse($endsOn),
+        slotDurationMinutes: $series->slot_duration_minutes,
+        slotPaddingMinutes: $series->slot_padding_minutes,
+        minNoticeMinutes: $notice,
+        maxHorizonDays: $horizon,
+        location: $series->location,
+        windows: $windows,
+        hosts: [new HostAssignment($host ?? $series->hosts->first()?->host ?? user('Bishop'), 'interviewer')],
+        meta: $meta ?? $series->meta,
+    );
+}
