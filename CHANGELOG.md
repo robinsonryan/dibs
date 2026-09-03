@@ -7,6 +7,31 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
+### Added
+
+- **Series** — a repeating rule that materialises into ordinary availabilities,
+  reversing spec D5/N1's "no recurrence". `dibs_series` (title unique per
+  context, case-insensitively; timezone; cadence + ordinals; start/end dates;
+  duration, padding, notice, horizon, location; status; rule_version; meta),
+  `dibs_series_windows` (weekday + minutes from local midnight, several rows per
+  weekday for several blocks a day) and `dibs_series_hosts` (the pool each
+  occurrence is given a copy of). `dibs_availabilities` gains `series_id`
+  (nulled, not cascaded, when the series goes - its bookings are history),
+  `occurs_on`, `window_index`, `rule_version` and `detached_at`, with a partial
+  unique index on `(series_id, occurs_on, window_index)`.
+- `Enums\Cadence` (`weekly`, `fortnightly`, `monthly-ordinal`, `once`) and
+  `Enums\SeriesStatus` (`active`, `paused`, `ended`).
+- Models `Series`, `SeriesWindow`, `SeriesHost` (all substitutable through
+  `config('dibs.models')`), with factories. `Series::occursOn($localDate)` and
+  `Series::occurrenceDates($from, $through)` answer the calendar: Sunday-based
+  week indices counted from the week containing `starts_on`, ordinals applied to
+  every weekday the rule has, `-1` meaning the last of that weekday in the
+  month, and a month with no fifth simply yielding nothing.
+- `Availability::series()`, `Availability::detached()` and
+  `Availability::isDetached()`.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

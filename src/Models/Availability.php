@@ -7,6 +7,7 @@ namespace RobinsonRyan\Dibs\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use RobinsonRyan\Dibs\Concerns\HasContext;
 use RobinsonRyan\Dibs\Concerns\HasUuidPrimaryKey;
@@ -34,6 +35,11 @@ use RobinsonRyan\Dibs\Support\TablePrefixer;
  * @property int|null $max_horizon_days
  * @property AvailabilityStatus $status
  * @property array<string, mixed> $meta
+ * @property string|null $series_id
+ * @property \Carbon\CarbonImmutable|null $occurs_on
+ * @property int|null $window_index
+ * @property int|null $rule_version
+ * @property \Carbon\CarbonImmutable|null $detached_at
  * @property \Carbon\CarbonImmutable|null $created_at
  * @property \Carbon\CarbonImmutable|null $updated_at
  */
@@ -73,6 +79,10 @@ class Availability extends Model
             'max_horizon_days' => 'integer',
             'status' => AvailabilityStatus::class,
             'meta' => 'array',
+            'occurs_on' => 'immutable_date',
+            'window_index' => 'integer',
+            'rule_version' => 'integer',
+            'detached_at' => 'immutable_datetime',
             'created_at' => 'immutable_datetime',
             'updated_at' => 'immutable_datetime',
         ];
@@ -81,6 +91,18 @@ class Availability extends Model
     protected static function newFactory(): AvailabilityFactory
     {
         return AvailabilityFactory::new();
+    }
+
+    /**
+     * The rule this occurrence was materialised from; null for an availability
+     * opened by hand, and null again once its series is deleted (its bookings
+     * are history and outlive the rule).
+     *
+     * @return BelongsTo<Series, $this>
+     */
+    public function series(): BelongsTo
+    {
+        return $this->belongsTo(Dibs::model(Series::class), 'series_id');
     }
 
     /**
@@ -113,5 +135,23 @@ class Availability extends Model
     public function isPublished(): bool
     {
         return $this->status === AvailabilityStatus::Published;
+    }
+
+    /**
+     * Occurrences edited by hand, which regeneration, pause and resume leave
+     * to their owner (D7 of the consumer's rule: editing only ever changes what
+     * still follows the series).
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeDetached(Builder $query): Builder
+    {
+        return $query->whereNotNull($this->qualifyColumn('detached_at'));
+    }
+
+    public function isDetached(): bool
+    {
+        return $this->detached_at !== null;
     }
 }
