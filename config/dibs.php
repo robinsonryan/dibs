@@ -8,6 +8,9 @@ use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\BookingHost;
 use RobinsonRyan\Dibs\Models\Offer;
 use RobinsonRyan\Dibs\Models\OfferSlot;
+use RobinsonRyan\Dibs\Models\Series;
+use RobinsonRyan\Dibs\Models\SeriesHost;
+use RobinsonRyan\Dibs\Models\SeriesWindow;
 use RobinsonRyan\Dibs\Models\Slot;
 
 return [
@@ -43,6 +46,9 @@ return [
         BookingHost::class => BookingHost::class,
         Offer::class => Offer::class,
         OfferSlot::class => OfferSlot::class,
+        Series::class => Series::class,
+        SeriesWindow::class => SeriesWindow::class,
+        SeriesHost::class => SeriesHost::class,
     ],
 
     /*

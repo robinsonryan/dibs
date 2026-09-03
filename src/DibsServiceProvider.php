@@ -5,12 +5,19 @@ declare(strict_types=1);
 namespace RobinsonRyan\Dibs;
 
 use Illuminate\Support\ServiceProvider;
+use RobinsonRyan\Dibs\Contracts\HostResolver;
+use RobinsonRyan\Dibs\Support\IdentityHostResolver;
 
 final class DibsServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/dibs.php', 'dibs');
+
+        // bind(), not singleton(): a consumer that pools positions rather than
+        // people replaces this with its own binding, and nothing in the package
+        // holds on to the instance between calls.
+        $this->app->bind(HostResolver::class, IdentityHostResolver::class);
     }
 
     public function boot(): void

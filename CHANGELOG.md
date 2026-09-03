@@ -7,6 +7,126 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
+### Added
+
+- **Series** — a repeating rule that materialises into ordinary availabilities,
+  reversing spec D5/N1's "no recurrence". `dibs_series` (title unique per
+  context, case-insensitively; timezone; cadence + ordinals; start/end dates;
+  duration, padding, notice, horizon, location; status; rule_version; meta),
+  `dibs_series_windows` (weekday + minutes from local midnight, several rows per
+  weekday for several blocks a day) and `dibs_series_hosts` (the pool each
+  occurrence is given a copy of). `dibs_availabilities` gains `series_id`
+  (nulled, not cascaded, when the series goes - its bookings are history),
+  `occurs_on`, `window_index`, `rule_version` and `detached_at`, with a partial
+  unique index on `(series_id, occurs_on, window_index)`.
+- `Enums\Cadence` (`weekly`, `fortnightly`, `monthly-ordinal`, `once`) and
+  `Enums\SeriesStatus` (`active`, `paused`, `ended`).
+- Models `Series`, `SeriesWindow`, `SeriesHost` (all substitutable through
+  `config('dibs.models')`), with factories. `Series::occursOn($localDate)` and
+  `Series::occurrenceDates($from, $through)` answer the calendar: Sunday-based
+  week indices counted from the week containing `starts_on`, ordinals applied to
+  every weekday the rule has, `-1` meaning the last of that weekday in the
+  month, and a month with no fifth simply yielding nothing.
+- `Availability::series()`, `Availability::detached()` and
+  `Availability::isDetached()`.
+- `Data\SeriesSpec` and `Data\WindowSpec` — a whole rule as the caller means
+  it. `ensureValid()` enforces only what is true of any consumer's series (at
+  least one window and one host, an end after the start, ordinals on the monthly
+  cadence and nowhere else, windows inside their day, and windows sharing a
+  weekday far enough apart for one whole appointment to fit between them) and
+  throws `Exceptions\InvalidSeries`, which carries a machine `reason` -
+  `windows.overlap`, `windows.gap`, `windows.bounds`, `ends_before_starts`,
+  `ordinals.required`, `ordinals.forbidden`, `windows.required`,
+  `hosts.required` - so the consumer writes the sentence a person reads.
+- `Contracts\HostResolver` and its default `Support\IdentityHostResolver`,
+  bound in the service provider. A pool entry need not be a person: a consumer
+  may pool a position and mean "whoever holds it then". Empty means vacant.
+- `Slot::capacityFor($now = null)` - how many appointments a slot can really
+  take: the people its pool resolves to who have nothing else booked across it.
+  A slot with no pool falls back to its `capacity` column; a pool that resolves
+  to nobody gives 0.
+- `HostAvailability::freeHolders($availability, $slot, $at = null)` - the
+  role-agnostic reading of `freeHosts`, used by capacity.
+- `Actions\CreateSeries(SeriesSpec): Series` - records the rule at version 1
+  and materialises nothing; the consumer says how far ahead to open times.
+- `Actions\MaterialiseSeries(Series, CarbonImmutable $through): int` - lays the
+  rule down as ordinary published availabilities from today to `$through`, one
+  per window per matching date, each with its own copy of the pool. Idempotent:
+  an occurrence is keyed `(series_id, occurs_on, window_index)` and a key that
+  already has a row is skipped, so a second run creates nothing and a booked,
+  detached or hand-left day is never remade. Dates before today are never
+  reached. Materialises nothing for a paused or ended series. Fires
+  `Events\SeriesMaterialised` (with the occurrences created) after commit.
+- `Actions\UpdateSeries(Series, SeriesSpec): Series` - an edit that moves the
+  rule (windows, cadence, ordinals, dates, duration, padding, place, pool,
+  timezone) bumps `rule_version` and regenerates; an edit that only changes what
+  a day carries (title, meta, notice, horizon) is copied straight onto the
+  future days that follow the series, with no version bump and nobody's booking
+  disturbed.
+- `Actions\RegenerateSeries(Series): int` - remakes every future, following day
+  still stamped with an older rule version, then materialises out to
+  `max_horizon_days` (90 days when the series names none). A day carrying a live
+  booking is left standing for the consumer to settle. A day whose bookings are
+  all spent cannot be deleted (D3) and is **released** instead - closed and cut
+  loose from the series - so its record stands and the date is free for the new
+  rule.
+- `Actions\FindSeriesConflicts(Series, SeriesSpec): Collection<Booking>` - the
+  live future bookings a proposed rule would strand, as a pure read, so the
+  consumer can ask a person before cancelling on their behalf. A shorter horizon
+  is not a conflict; past and detached days are ignored.
+- `Actions\ReparentSlotAsAdhoc(Slot): Slot` - cuts a booked slot loose from its
+  day, keeping the booking, its hosts, its time and its place (copied down from
+  the day when the slot had none), so the day can be remade around it.
+- `Actions\PauseSeries(Series): Series` - retires every unclaimed time still
+  ahead, including on days somebody detached (a paused series offers nothing),
+  and leaves booked ones alone.
+- `Actions\ResumeSeries(Series, CarbonImmutable $through): Series` - reopens
+  exactly those rows rather than remaking the days, so nothing can be
+  duplicated, then materialises the dates that came due while it was paused.
+- `Actions\DeleteSeries(Series): void` - refused (`DeletionRefused`) if any of
+  its days ever carried a booking, cancelled ones included; otherwise the rule,
+  its blocks, its pool and its days all go, each day through
+  `DeleteAvailability` so a held slot still refuses in the words it always did.
+- `Actions\DetachOccurrence(Availability): Availability` and
+  `Actions\FollowSeries(Availability): Availability` - take one day out of the
+  rule's hands and put it back. Following marks the day as being on an older
+  rule version and lets `RegenerateSeries` do the rest, so there is one code
+  path that remakes a day.
+- `Actions\SweepSeries(?CarbonInterface $now = null): int` - the nightly job a
+  consumer schedules (the package ships no commands, as with `ExpireOffers`):
+  rolls every open series forward to its horizon, retires the unclaimed times
+  that have passed, and ends a series whose last date has gone by on its own
+  calendar. One series failing does not stop the sweep.
+- Events `SeriesPaused`, `SeriesResumed`, `SeriesDeleted`.
+- `Support\SeriesClock` - the one place the package reads a wall clock.
+- The window-to-instant conversion in `Support\SeriesClock` is the single
+  sanctioned exception to "UTC instants only" (spec D10): a wall-clock window
+  needs the series' timezone to know which instant it is on a given date, and
+  6 pm has to stay 6 pm across a daylight-saving change. `MaterialiseSeries`
+  uses it to place occurrences and `FindSeriesConflicts` to ask the same
+  question backwards. Everything written is still a UTC instant.
+
+### Changed
+
+- Spec **D5** and non-goal **N1** are reversed: recurrence is in, as a materialised
+  series. RRULE strings specifically stay out - the cadence is an enum plus
+  ordinals, not a parser. Spec **D10** gains its one exception, `SeriesClock`.
+- `HostAvailability::freeHosts()` and `Slot::bookable(requireFreeHost: true)`
+  now put each pool entry through the bound `HostResolver` before asking who is
+  busy, and count a person two entries stand for once. With the default identity
+  resolver both answer exactly as they did. `bookable(requireFreeHost: true)` is
+  no longer a single statement - the pool is resolved in PHP first - but the
+  number of queries is fixed and does not grow with the number of slots.
+
+### Upgrading
+
+Additive: four new migrations, no existing column changed, no existing behaviour
+changed with the default resolver bound. Run `php artisan migrate` (or republish
+the migrations if you took ownership of them). A consumer that pools positions
+rather than people binds its own `HostResolver`; everyone else does nothing.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

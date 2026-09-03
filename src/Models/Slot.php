@@ -13,13 +13,16 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Builder as QueryBuilder;
+use Illuminate\Support\Facades\DB;
 use RobinsonRyan\Dibs\Concerns\HasUuidPrimaryKey;
+use RobinsonRyan\Dibs\Contracts\HostResolver;
 use RobinsonRyan\Dibs\Database\Factories\SlotFactory;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\BookingStatus;
 use RobinsonRyan\Dibs\Enums\SlotOrigin;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Support\Dibs;
+use RobinsonRyan\Dibs\Support\HostAvailability;
 use RobinsonRyan\Dibs\Support\TablePrefixer;
 
 /**
@@ -140,6 +143,34 @@ class Slot extends Model
     }
 
     /**
+     * How many appointments this slot can really take: the number of people its
+     * availability's pool resolves to who have nothing else booked across it
+     * (D15, and the consumer rule that capacity *is* who is free).
+     *
+     * A slot with no pool behind it — an adhoc slot, or an availability nobody
+     * was pooled on — falls back to its own `capacity` column, because there is
+     * nobody to be busy. A pool that resolves to nobody is vacant and returns
+     * zero, which is also when `bookable(requireFreeHost: true)` drops it.
+     *
+     * `$now` names the moment the pool is resolved at, defaulting to this
+     * slot's start — who holds the position when the appointment happens.
+     */
+    public function capacityFor(?CarbonInterface $now = null): int
+    {
+        $availability = $this->availability;
+
+        if (! $availability instanceof Availability) {
+            return $this->capacity;
+        }
+
+        if ($availability->hosts()->doesntExist()) {
+            return $this->capacity;
+        }
+
+        return HostAvailability::freeHolders($availability, $this, $now)->count();
+    }
+
+    /**
      * Open, on a published availability, in the future, and inside the
      * availability's notice/horizon window — measured against `$now` (a UTC
      * instant; defaults to the clock). Held slots never appear here (R32).
@@ -188,33 +219,115 @@ class Slot extends Model
             return $query;
         }
 
+        // SQL cannot call PHP, and a pool entry may stand for somebody other
+        // than itself (`HostResolver`), so the pools of the availabilities this
+        // query can reach are resolved first — one query for the pool rows, one
+        // for the moments to resolve them at, and the resolver once per distinct
+        // entry — and the people that come back are handed to the busy check as
+        // a values list. Resolving before the outer query runs means the moment
+        // used is the *availability's* start rather than each slot's, which is
+        // the same calendar day; `capacityFor()` resolves per slot.
+        $resolved = $this->resolvedPool($query);
+
         // Keep the slot when its availability has no pool at all (nobody to be
-        // busy), or when at least one pool member has nothing else booked
-        // across it. Both pool reads are derived tables, so the `dibs_slots`
-        // inside the busy one cannot shadow the outer slot row the comparisons
-        // correlate against.
-        return $query->where(function (Builder $free): void {
-            $free
-                ->whereNotExists(fn (QueryBuilder $pool): QueryBuilder => $pool
-                    ->fromSub($this->poolOf(), 'pool')
-                    ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id')))
-                ->orWhereExists(function (QueryBuilder $member): void {
-                    $member
-                        ->fromSub($this->poolOf(), 'pool')
-                        ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id'))
-                        ->whereNotExists(fn (QueryBuilder $busy): QueryBuilder => $busy
-                            ->fromSub($this->busyHosts(), 'busy')
-                            ->whereColumn('busy.host_type', 'pool.host_type')
-                            ->whereColumn('busy.host_id', 'pool.host_id')
-                            // A booking on this very slot never makes its own
-                            // host busy for it (D15/B38).
-                            ->whereColumn('busy.slot_id', '!=', $this->qualifyColumn('id'))
-                            // The half-open overlap of OverlapCheck::overlappingSlots,
-                            // restated between two slot rows (B37).
-                            ->whereColumn('busy.starts_at', '<', $this->qualifyColumn('ends_at'))
-                            ->whereColumn('busy.ends_at', '>', $this->qualifyColumn('starts_at')));
-                });
+        // busy), or when at least one person the pool resolves to has nothing
+        // else booked across it. Both pool reads are derived tables, so the
+        // `dibs_slots` inside the busy one cannot shadow the outer slot row the
+        // comparisons correlate against. A pool that resolves to nobody leaves
+        // the values list empty and only the first branch can save a slot —
+        // which is exactly "vacant, so unbookable".
+        return $query->where(function (Builder $free) use ($resolved): void {
+            $free->whereNotExists(fn (QueryBuilder $pool): QueryBuilder => $pool
+                ->fromSub($this->poolOf(), 'pool')
+                ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id')));
+
+            if (! $resolved instanceof QueryBuilder) {
+                return;
+            }
+
+            $free->orWhereExists(function (QueryBuilder $member) use ($resolved): void {
+                $member
+                    ->fromSub($resolved, 'pool')
+                    ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id'))
+                    ->whereNotExists(fn (QueryBuilder $busy): QueryBuilder => $busy
+                        ->fromSub($this->busyHosts(), 'busy')
+                        ->whereColumn('busy.host_type', 'pool.host_type')
+                        ->whereColumn('busy.host_id', 'pool.host_id')
+                        // A booking on this very slot never makes its own
+                        // host busy for it (D15/B38).
+                        ->whereColumn('busy.slot_id', '!=', $this->qualifyColumn('id'))
+                        // The half-open overlap of OverlapCheck::overlappingSlots,
+                        // restated between two slot rows (B37).
+                        ->whereColumn('busy.starts_at', '<', $this->qualifyColumn('ends_at'))
+                        ->whereColumn('busy.ends_at', '>', $this->qualifyColumn('starts_at')));
+            });
         });
+    }
+
+    /**
+     * The pools of every availability this query can reach, put through the
+     * bound `HostResolver`, as a `(availability_id, host_type, host_id)` values
+     * list ready to be joined against. Null when nothing resolves — no pools at
+     * all, or every pool vacant.
+     *
+     * @param  Builder<static>  $query
+     */
+    private function resolvedPool(Builder $query): ?QueryBuilder
+    {
+        $availabilityIds = (clone $query)
+            ->select($this->qualifyColumn('availability_id'))
+            ->distinct();
+
+        $pool = Dibs::query(AvailabilityHost::class)
+            ->whereIn('availability_id', $availabilityIds)
+            ->orderBy('id')
+            ->get();
+
+        if ($pool->isEmpty()) {
+            return null;
+        }
+
+        $pool->load('host');
+
+        $moments = Dibs::query(Availability::class)
+            ->whereKey($pool->pluck('availability_id')->unique()->all())
+            ->pluck('starts_at', 'id');
+
+        $resolver = app(HostResolver::class);
+        $values = null;
+        $seen = [];
+
+        foreach ($pool as $member) {
+            $host = $member->host;
+            $moment = $moments->get($member->availability_id);
+
+            if (! $host instanceof Model || ! $moment instanceof CarbonInterface) {
+                continue;
+            }
+
+            foreach ($resolver->resolve($host, $moment) as $holder) {
+                $row = [$member->availability_id, $holder->getMorphClass(), (string) $holder->getKey()];
+                $key = implode('|', $row);
+
+                // Two entries standing for the same person are one row: the
+                // busy check is an EXISTS, but a values list that repeats a
+                // person makes the plan wider for nothing.
+                if (isset($seen[$key])) {
+                    continue;
+                }
+
+                $seen[$key] = true;
+
+                $select = DB::query()->selectRaw(
+                    'cast(? as uuid) as availability_id, cast(? as varchar) as host_type, cast(? as varchar) as host_id',
+                    $row,
+                );
+
+                $values = $values instanceof QueryBuilder ? $values->unionAll($select) : $select;
+            }
+        }
+
+        return $values;
     }
 
     /**
