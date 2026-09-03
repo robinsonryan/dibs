@@ -14,6 +14,7 @@ use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Series;
 use RobinsonRyan\Dibs\Models\Slot;
 use RobinsonRyan\Dibs\Support\Dibs;
+use RobinsonRyan\Dibs\Support\SlotStatusSweep;
 
 /**
  * Stop offering a series' times, without destroying anything.
@@ -55,26 +56,17 @@ final class PauseSeries
 
     private function retireWhatIsAhead(Series $series): void
     {
-        // Locked before the update, not filtered inside it: under READ
-        // COMMITTED an UPDATE waiting on a row a rival BookSlot holds
-        // re-evaluates its subquery against the original snapshot, so a slot
-        // that had just been claimed could be retired out from under it.
-        $slots = Dibs::query(Slot::class)
-            ->whereIn('availability_id', Dibs::query(Availability::class)
-                ->where('series_id', $series->getKey())
-                ->select('id'))
-            ->where('status', SlotStatus::Open->value)
-            ->where('starts_at', '>', Slot::instant(null))
-            ->whereDoesntHave('activeBookings')
-            ->lockForUpdate()
-            ->get();
-
-        if ($slots->isEmpty()) {
-            return;
-        }
-
-        Dibs::query(Slot::class)
-            ->whereKey($slots->modelKeys())
-            ->update(['status' => SlotStatus::Retired->value]);
+        // Locked before the update rather than filtered inside it — the reason
+        // lives in SlotStatusSweep, which is the one place this package moves a
+        // set of slots to a status.
+        SlotStatusSweep::retire(
+            Dibs::query(Slot::class)
+                ->whereIn('availability_id', Dibs::query(Availability::class)
+                    ->where('series_id', $series->getKey())
+                    ->select('id'))
+                ->where('status', SlotStatus::Open->value)
+                ->where('starts_at', '>', Slot::instant(null))
+                ->whereDoesntHave('activeBookings'),
+        );
     }
 }

@@ -1,0 +1,109 @@
+{
+  "commit_id": "ce484cd7e44a6818b38780637e51d38c88dba62c",
+  "event": "COMMENT",
+  "body": "**Verdict: NOT MERGEABLE AS-IS — 1 BLOCKER, 6 MAJOR, 9 MINOR.** (Already on develop/tagged; findings are dispositions for v0.3.x.)\n\nVerified at ce484cd in an isolated detached worktree: full suite 379 passed / 1007 assertions; 11 probe tests written and run to substantiate every finding below (P-numbers); the series lock test goes red when `Dibs::lock` is replaced by a plain read (blocked on statement 4 instead of statement 0), so the concurrency claim holds.\n\n**Load-bearing invariant — status:** materialisation is idempotent (second run creates 0; rival run queues on the series row), never reaches before the series' today, never remakes a booked or detached key, and the DST test pins 2026-03-08 and 2026-11-01 to the instant — *holds*. \"Regeneration never deletes a slot that carries a live claim\" — *broken for held slots*: `RegenerateSeries` deletes a day whose slot a pending offer holds, and `offer_slots.slot_id` cascades (BLOCKER). Two more leaks around the edges: a paused series re-offers a slot once its offer lapses (MAJOR), and merging two blocks around a booking double-lists the same hour (MAJOR).\n\n**Counts by rank:** BLOCKER 1 · MAJOR 6 · MINOR 9.\n\n**Dimensions:**\n1. Security & correctness — findings above; cross-context: no leak between series, but `UpdateSeries` half-applies a context change (MAJOR); FKs/locks/afterCommit otherwise sound.\n2. Simplification — mostly lean; three copies of lock-then-retire/reopen (Pause/Resume/Sweep) hit the Rule of Three (MINOR); `ResumeSeries` requires a `$through` that Regenerate/Sweep derive (MINOR).\n3. Abstraction enforcement — **clean**: class-map everywhere (`git grep` for `::query()`/`new Model` in src/ is empty), all three new models non-final `@extensible`, actions final + transactional + afterCommit, raw SQL is a literal `selectRaw` with bindings. One nit: `Series::day()` is a second `shiftTimezone` outside `SeriesClock` (MINOR).\n4. Reuse — **clean**: publishes through `PublishAvailability`, closes through `CloseAvailability`, deletes through `DeleteAvailability` in `DeleteSeries`, busy check through `OverlapCheck::overlappingSlots`; the one place it *bypasses* an existing guard is the BLOCKER (`$occurrence->delete()` instead of `DeleteAvailability`).\n5. Test integrity — **clean** on the three claims checked: DST test pins instants, idempotency test re-runs and counts slots, lock test verified red without the lock. Caveat: the R47 \"fixed number of queries\" test measures the identity resolver, which issues no queries (see the resolver fan-out MAJOR).\n6. API coherence/docs — SPEC/README/CHANGELOG amendments are thorough; drift: README still shows the 2-arg `resolve()` signature, and README/SPEC's \"fixed number of queries\" claim is only true for the identity resolver; `capacityFor()` is documented as \"how many appointments a slot can really take\" while `BookSlot` at this head books against `capacity = 1` (develop `fa72680` / v0.3.2 appears to address that — verify it also covers `settle()` and `ReleaseSlot`).\n",
+  "comments": [
+    {
+      "path": "src/Actions/RegenerateSeries.php",
+      "line": 107,
+      "side": "RIGHT",
+      "body": "[BLOCKER] A clean-looking day is deleted with `$occurrence->delete()`, bypassing `DeleteAvailability`'s held-slot refusal; `dibs_offer_slots.slot_id` is `cascadeOnDelete`, so a pending offer silently loses its slots. — Scenario (probe P1): leader offers a member the 6 pm slot on 8 Mar (`CreateOffer` → slot `held`, offer `pending`); leader then changes the series' hours → `clearStale` sees no *bookings* on that day → deletes it → the held slot is gone and the offer is still `pending` with 0 slots; the invitee's accept link points at nothing and nobody was told. This is the same class of loss the invariant forbids for bookings. — Direction: treat a held slot as a live claim in `clearStale` (leave the day standing and surface it from `FindSeriesConflicts` so the consumer withdraws or keeps the offer), or route the delete through `DeleteAvailability` and let `DeletionRefused` propagate instead of cascading."
+    },
+    {
+      "path": "src/Actions/PauseSeries.php",
+      "line": 66,
+      "side": "RIGHT",
+      "body": "[MAJOR] Pause retires only `open` slots; a `held` slot stays held, and when its offer expires/withdraws `ReleaseSlot` returns it to `open` — nothing consults the series' status, so a paused series offers that time. — Scenario (P2): offer on 15 Mar 6 pm → pause → `ExpireOffers` runs → slot `open`; `Slot::bookable()` and `bookable(requireFreeHost: true)` both list it while `series.status = paused`, and the sweep skips paused series so it stays listed until resume. — Direction: either have `ReleaseSlot`/`bookable()` treat an occurrence of a paused series as closed, or have Pause retire held slots' futures by recording intent (e.g. retire on release when the availability's series is paused)."
+    },
+    {
+      "path": "src/Actions/RegenerateSeries.php",
+      "line": 117,
+      "side": "RIGHT",
+      "body": "[MAJOR] `release()` closes the day and unlinks it but leaves its unbooked slots `open`. `CloseAvailability` only stops `bookable()`; `Slot::upcoming()` still lists them (P3: 4 open rows on the released day), and `PublishAvailability` documents that it *reopens* a closed availability — one call puts the old grid back beside the remade day. — Scenario: leader edits hours on a series where a member once cancelled; the leader's list (`upcoming()`) shows the released day's four old times next to the new day's. — Direction: retire the released day's open, unbooked slots in `release()` (the same lock-then-update `PauseSeries` does), so \"it offers nothing further\" is true at the slot level too."
+    },
+    {
+      "path": "src/Actions/UpdateSeries.php",
+      "line": 51,
+      "side": "RIGHT",
+      "body": "[MAJOR] `context_type/context_id` are filled from the spec on update but are neither a rule change (`ruleChanged` ignores them) nor restamped, so a context change half-applies. — Scenario (P6): `UpdateSeries($series, spec with context = Ward B)` → series says B, `rule_version` stays 1, every existing occurrence (and its pool copy) still says Ward A; future materialised days say B. The same series now has days in two tenants. — Direction: make context immutable in `UpdateSeries` (ignore or throw `InvalidSeries`), or include it in `ruleChanged`."
+    },
+    {
+      "path": "src/Actions/FindSeriesConflicts.php",
+      "line": 97,
+      "side": "RIGHT",
+      "body": "[MAJOR] \"Still fits\" is judged by time only, while regeneration is keyed by `(date, window_index)`; a live-booked day whose *index* changes is left standing on the old version and the new key is materialised over the same hours. — Scenario (P4): blocks 18:00–19:00 (#0) and 19:30–20:30 (#1), booking at 19:30 on #1; leader merges them into one 18:00–21:00 block → 0 conflicts reported → `clearStale` deletes #0, leaves #1 (live), `MaterialiseSeries` creates the new #0 → two `open`, `bookable()` slots at 20:00 on 8 Mar from one series; #1 is stranded on rule_version 1 until its booking is spent. — Direction: a live-booked day is a conflict when the proposed rule does not produce its exact `(date, index, start, end)` window (or: after the rule moves, skip materialising any window that overlaps a standing live-booked day on that date)."
+    },
+    {
+      "path": "src/Models/Slot.php",
+      "line": 313,
+      "side": "RIGHT",
+      "body": "[MAJOR] The resolver is called once per pool row per reachable availability — not \"once per distinct entry\" as the comment says (dedupe is on the *results*, and `$at` differs per availability). — Scenario (P7): 16 occurrences × 3 pool rows → 48 `resolve()` calls for one `bookable(requireFreeHost: true)` read. ccstake's `CallingHostResolver` runs a `calling_user` query per call and caches nothing, so the member page at a 90-day horizon is on the order of 80–250 queries; the R47 \"fixed number of queries\" test measures the identity resolver, which issues none. — Direction: resolve once per distinct `(host_type, host_id, context, local date)` and fan the result out, or add a batch method to the contract; and state in SPEC §5.4 / README that the resolver is invoked per pool row per availability."
+    },
+    {
+      "path": "src/Models/Slot.php",
+      "line": 158,
+      "side": "RIGHT",
+      "body": "[MAJOR] `capacityFor()` reports free resolved holders, but the days this PR materialises get `capacity => 1` slots (`PublishAvailability`) and `BookSlot` at this head still books against the column. — Scenario (P10): two-person pool → `capacityFor()` = 2; first booking lands; `capacityFor()` still 2; second booking → `SlotUnavailable: its status is booked`. A member told \"2 spots\" is refused the second — R15's package half is incoherent at ce484cd. develop `fa72680` (v0.3.2) changes `BookSlot::assertBookable/settle` to `freeHolders` — treat this as *verify that commit* rather than re-fix: `ReleaseSlot` still compares `activeBookings >= capacity`, so a cancellation on a 2-of-3 slot may flip it back wrongly. — Direction: one definition of a slot's capacity, used by `assertBookable`, `settle`, `ReleaseSlot` and `capacityFor`."
+    },
+    {
+      "path": "src/Data/SeriesSpec.php",
+      "line": 104,
+      "side": "RIGHT",
+      "body": "[MINOR] Bounds allow any 0–1440 window, so a window inside a DST spring-forward gap converts to a zero-length availability and aborts the whole run. — Scenario (P5): window 02:00–03:00 America/Denver; on 2026-03-08 both ends map to 09:00 UTC → `PublishAvailability` throws `InvalidGeometry` → the `MaterialiseSeries` transaction rolls back (0 rows for the series, including every other date) and every nightly `SweepSeries` rethrows for it. Unreachable from ccstake (06:00–22:00 rule), reachable from the package API. — Direction: skip (or shorten) a window whose converted end ≤ start on that date, and say so in SPEC D10's exception."
+    },
+    {
+      "path": "src/Data/SeriesSpec.php",
+      "line": 52,
+      "side": "RIGHT",
+      "body": "[MINOR] `timezone` is never validated: `CreateSeries` stores `Mars/Olympus` and `MaterialiseSeries` throws Carbon's `InvalidTimeZoneException` later, inside the transaction (P8). — Direction: `in_array($tz, DateTimeZone::listIdentifiers(), true)` in `ensureValid()` with an `InvalidSeries` reason (`timezone.invalid`), so the refusal happens before any write and in the package's own exception."
+    },
+    {
+      "path": "src/Data/SeriesSpec.php",
+      "line": 78,
+      "side": "RIGHT",
+      "body": "[MINOR] Ordinal *values* are unchecked: SPEC §4 says `int[] ⊂ {1..5, -1}` but `[0]`, `[6]`, `[-2]` are accepted and silently never match a date. — Direction: reason `ordinals.bounds`."
+    },
+    {
+      "path": "src/Actions/DeleteSeries.php",
+      "line": 43,
+      "side": "RIGHT",
+      "body": "[MINOR] The refusal counts only *current* occurrences; a day the release path unlinked (series_id = null) no longer counts, so a series that has been used can be deleted (P3: cancelled booking → edit releases the day → `DeleteSeries` succeeds; the released row survives). SPEC §5.6 and README say \"if any occurrence ever carried a booking\"; consumer R10 says the same. Nothing is lost, but the stated rule is not what runs. — Direction: amend SPEC/README to \"any occurrence still following the series\", or keep a `released_from_series_id` back-reference and count it."
+    },
+    {
+      "path": "src/Actions/FollowSeries.php",
+      "line": 56,
+      "side": "RIGHT",
+      "body": "[MINOR] On a paused or ended series, `RegenerateSeries` deletes the clean day and `MaterialiseSeries` (paused/ended → 0) makes nothing, so the day vanishes and the action returns the deleted model (P9: returned id not in DB; 0 rows on that date). Resume brings it back for paused, never for ended (SPEC edge: \"detached + series ended: it stays\"). — Direction: on a non-active series, clear `detached_at` and mark the day stale without regenerating (resume will remake it), or refuse with `InvalidTransition`."
+    },
+    {
+      "path": "src/Actions/ResumeSeries.php",
+      "line": 35,
+      "side": "RIGHT",
+      "body": "[MINOR] `$through` is required here while `RegenerateSeries` and `SweepSeries` derive it (`max_horizon_days ?? 90`). A consumer resuming with a shorter `$through` reopens partially until the next sweep. — Direction: `?CarbonImmutable $through = null` defaulting to the same derivation, so the three verbs agree."
+    },
+    {
+      "path": "src/Actions/SweepSeries.php",
+      "line": 98,
+      "side": "RIGHT",
+      "body": "[MINOR] Third copy of \"lock the slots, then bulk-update status\" (`PauseSeries::retireWhatIsAhead`, `ResumeSeries::reopenWhatIsAhead`, here) — Rule of Three reached, and the READ COMMITTED rationale is written out in only one of them. — Direction: a `Support\\RetireSlots` / `ReopenSlots` helper taking the builder, carrying the comment once."
+    },
+    {
+      "path": "src/Models/Series.php",
+      "line": 252,
+      "side": "RIGHT",
+      "body": "[MINOR] `shiftTimezone('UTC')` is a second timezone call outside `Support\\SeriesClock`, which SPEC D10 and CLAUDE.md name as the single exception. The docblock justifies it, but the grep that enforces the rule now has two hits. — Direction: `SeriesClock::date(CarbonInterface): CarbonImmutable` and call it from `day()`."
+    },
+    {
+      "path": "README.md",
+      "line": 299,
+      "side": "RIGHT",
+      "body": "[MINOR] Signature drift: this comment still shows the 0.3.0 two-argument `resolve(Model $host, CarbonInterface $at)`; 0.3.1 added `?Model $context = null` and the CHANGELOG says a consumer \"must widen the signature\". — Direction: update the comment and add one line on what `$context` is."
+    },
+    {
+      "path": "docs/SPEC.md",
+      "line": 258,
+      "side": "RIGHT",
+      "body": "[MINOR] \"the number of queries is fixed and does not grow with the number of slots\" (also README §bookable) is true of the package's own statements and of the identity resolver only; the bound `HostResolver` is invoked once per pool row per availability (see the Slot.php finding). — Direction: qualify the claim and state the resolver call count."
+    }
+  ]
+}

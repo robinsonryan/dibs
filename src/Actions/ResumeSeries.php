@@ -15,6 +15,8 @@ use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Series;
 use RobinsonRyan\Dibs\Models\Slot;
 use RobinsonRyan\Dibs\Support\Dibs;
+use RobinsonRyan\Dibs\Support\SeriesClock;
+use RobinsonRyan\Dibs\Support\SlotStatusSweep;
 
 /**
  * Offer a paused series' times again, out to the date asked for.
@@ -28,11 +30,15 @@ use RobinsonRyan\Dibs\Support\Dibs;
  * Only slots that never carried a booking are reopened, which is precisely the
  * set pause retired: a slot retired by a *geometry* regeneration is history
  * (R41, it is retired because it carries bookings) and stays that way.
- * Materialisation then fills in the dates that came due while it was paused.
+ * Materialisation then fills in the dates that came due while it was paused,
+ * out to `$through` — or, when the caller names none, to the same horizon
+ * `RegenerateSeries` and `SweepSeries` derive (`max_horizon_days`, 90 days when
+ * the series names none), so the three verbs cannot disagree about how far
+ * ahead a series is open.
  */
 final class ResumeSeries
 {
-    public function __invoke(Series $series, CarbonImmutable $through): Series
+    public function __invoke(Series $series, ?CarbonImmutable $through = null): Series
     {
         return DB::transaction(function () use ($series, $through): Series {
             $locked = Dibs::lock($series);
@@ -50,7 +56,7 @@ final class ResumeSeries
 
             $this->reopenWhatIsAhead($locked);
 
-            (new MaterialiseSeries)($locked, $through);
+            (new MaterialiseSeries)($locked, $through ?? $this->horizonOf($locked));
 
             DB::afterCommit(fn () => event(new SeriesResumed($locked)));
 
@@ -60,22 +66,23 @@ final class ResumeSeries
 
     private function reopenWhatIsAhead(Series $series): void
     {
-        $slots = Dibs::query(Slot::class)
-            ->whereIn('availability_id', Dibs::query(Availability::class)
-                ->where('series_id', $series->getKey())
-                ->select('id'))
-            ->where('status', SlotStatus::Retired->value)
-            ->where('starts_at', '>', Slot::instant(null))
-            ->whereDoesntHave('bookings')
-            ->lockForUpdate()
-            ->get();
+        SlotStatusSweep::reopen(
+            Dibs::query(Slot::class)
+                ->whereIn('availability_id', Dibs::query(Availability::class)
+                    ->where('series_id', $series->getKey())
+                    ->select('id'))
+                ->where('status', SlotStatus::Retired->value)
+                ->where('starts_at', '>', Slot::instant(null))
+                ->whereDoesntHave('bookings'),
+        );
+    }
 
-        if ($slots->isEmpty()) {
-            return;
-        }
-
-        Dibs::query(Slot::class)
-            ->whereKey($slots->modelKeys())
-            ->update(['status' => SlotStatus::Open->value]);
+    /**
+     * The horizon the series itself names, read on its own calendar — the same
+     * derivation `RegenerateSeries` and `SweepSeries` make.
+     */
+    private function horizonOf(Series $series): CarbonImmutable
+    {
+        return SeriesClock::today($series->timezone)->addDays($series->max_horizon_days ?? 90);
     }
 }

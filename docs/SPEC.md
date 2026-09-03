@@ -309,29 +309,44 @@ pooled slot on (D18).
   horizon) is copied onto future following occurrences, with no bump and no slot touched.
 - **RegenerateSeries(Series)** — remakes every future, following occurrence still on an
   older version, then materialises out to `max_horizon_days` (90 days when null). It will
-  not touch the past, a detached occurrence, or one carrying a live booking. One whose
-  bookings are all spent is *released* (D16) rather than deleted.
+  not touch the past, a detached occurrence, or one carrying a **live claim** — a booking,
+  or a slot a pending offer is holding. The deletion of a clean day goes through
+  `DeleteAvailability`, so the held-slot refusal every other caller meets applies here too
+  and a refusal simply leaves the day standing on its old version. A day left standing is
+  caught up by the next edit, or by the nightly `SweepSeries`, which regenerates as well
+  as materialises. One whose bookings are all spent is *released* (D16) rather than
+  deleted: closed, its remaining open slots **retired** (so it leaves `Slot::upcoming()`
+  as well as `bookable()`, and republishing cannot revive the old grid — `PublishAvailability`
+  only ever generates slots for an availability that has none), cut loose from the series,
+  and stamped `meta.released_from_series` so `DeleteSeries` can still find it.
 - **FindSeriesConflicts(Series, SeriesSpec)** — pure read: the live future bookings a
   proposed rule would strand, so the consumer can ask a person rather than cancel on
   their behalf. A shorter horizon is not a conflict.
 - **ReparentSlotAsAdhoc(Slot)** — makes a booked slot adhoc, keeping the booking, its
   hosts, its time and its place (copied from the availability when the slot had none), so
   the day can be remade around it. This is how "keep it" is answered.
-- **PauseSeries / ResumeSeries(Series, `$through`)** — pause retires every unclaimed
-  future slot on the series' occurrences, detached ones included, and leaves booked ones;
-  resume **reopens those same rows** (never remakes the days, so nothing can be
-  duplicated) and then materialises the dates that came due meanwhile.
+- **PauseSeries / ResumeSeries(Series, `$through = null`)** — pause retires every
+  unclaimed future slot on the series' occurrences, detached ones included, and leaves
+  booked ones; resume **reopens those same rows** (never remakes the days, so nothing can
+  be duplicated) and then materialises the dates that came due meanwhile, out to
+  `$through` or, when the caller names none, the same horizon `RegenerateSeries` and
+  `SweepSeries` derive. Lock-then-set is one helper, `Support\SlotStatusSweep`, shared by
+  pause, resume, the sweep and the released-day retirement.
 - **DetachOccurrence / FollowSeries(Availability)** — take one day out of the rule's
   hands and put it back. Following marks the day stale and lets `RegenerateSeries` do the
   work, so exactly one code path remakes a day.
 - **DeleteSeries(Series)** — refused (`DeletionRefused`) if any occurrence ever carried a
-  booking, cancelled ones included; otherwise the rule, its windows, its pool and its
-  occurrences go, each occurrence through `DeleteAvailability` so a held slot refuses as
-  it always has.
+  booking, cancelled ones included — **including a day the rule has since released**,
+  found through `meta.released_from_series`, because a rule whose day was cut loose after
+  somebody cancelled has plainly been used; otherwise the rule, its windows, its pool and
+  its occurrences go, each occurrence through `DeleteAvailability` so a held slot refuses
+  as it always has.
 - **SweepSeries(`$now`)** — the sweep a consumer's scheduler runs: every active series
-  rolled forward to its horizon, past unclaimed slots retired, and a series whose
-  `ends_on` has passed **on its own calendar** set to `ended`. Per-series transaction; one
-  failure does not stop the sweep and is rethrown at the end.
+  rolled forward to its horizon **through `RegenerateSeries`**, past unclaimed slots
+  retired, and a series whose `ends_on` has passed **on its own calendar** set to `ended`.
+  Regenerating rather than only materialising is what catches up a day the last edit had
+  to leave standing, the night after its booking or its offer is settled. Per-series
+  transaction; one failure does not stop the sweep and is rethrown at the end.
 
 ## 6. Events
 
@@ -442,6 +457,12 @@ per the `verification` skill before any "done" claim.
 | R65 | `freeHosts`/`freeHolders`, `bookable(requireFreeHost:)` and `capacityFor()` read resolved holders: one entry standing for two people gives capacity 2, one standing for nobody gives 0 and an unbookable slot, a resolved person booked across the slot is not free, and two entries for one person count once | `Support\HostAvailability`, `Slot::capacityFor()`, `Slot::scopeBookable()` | `HostResolverTest` (10 cases), `tests/Feature/Foundation/BookableFreeHostTest.php` | Done |
 | R67 | `BookSlot` gates a pooled slot on who is free, not on the `capacity` column: a capacity-1 slot whose pool resolves to three free people takes three claims and refuses the fourth, flipping to `booked` only on the third; a pool that resolves to nobody, or whose only holder is booked across the slot, refuses the first; a slot with no pool still gates on the column. Two connections contending for a pooled slot with two free people both win; with one free person exactly one does | `Actions\BookSlot::capacityOf()` (used by the capacity check and the settle step), `Slot::capacityFor()` | `tests/Feature/Booking/PooledCapacityTest.php`, `tests/Concurrency/BookSlotConcurrencyTest.php` pooled cases | Done |
 | R68 | `config('dibs.exclusive_hosts')` (default `false`) makes a booking on the slot being asked about count against its own host, in one definition (`Support\OverlapCheck::hostsAreExclusive()`) that `freeHolders`, `capacityFor()`, `bookable(requireFreeHost:)` and `AssignBookingHost(guardHostOverlap: true)` all read. Default off leaves the R19 behaviour exactly as it was | `Support\OverlapCheck`, `Support\HostAvailability::busyAssignments()`, `Slot::scopeBookable()`, `config/dibs.php` | `PooledCapacityTest.php` exclusive-host cases | Done |
+
+| R69 | Regeneration never drops a day carrying a live claim: a **held** slot counts as one alongside a booking, the delete of a clean day runs through `DeleteAvailability` so its held-slot refusal applies, and a refusal leaves the day standing rather than cascading `dibs_offer_slots` | `Actions\RegenerateSeries::clearStale()` | `UpdateSeriesTest` "leaves a day standing when an offer is holding one of its times" (red before the fix: the day was deleted and the pending offer lost its slots) | Done |
+| R70 | A released day's remaining open slots are retired, so it leaves `Slot::upcoming()` as well as `bookable()`, and `PublishAvailability` cannot revive them; the day records `meta.released_from_series` | `Actions\RegenerateSeries::release()` via `Support\SlotStatusSweep`, `Actions\PublishAvailability` (generates only when there are no slots at all) | `UpdateSeriesTest` "retires the times a released day still offered, and publishing does not bring them back" | Done |
+| R71 | `DeleteSeries` counts released days too — a rule whose used day was cut loose by a later edit is still refused | `Actions\DeleteSeries` (`meta->released_from_series`) | `SeriesLifecycleTest` "still refuses to delete a rule whose used day was released by a later edit" | Done |
+| R72 | `SweepSeries` regenerates each active series rather than only materialising, so a day left standing on the old rule is caught up once its claim is settled | `Actions\SweepSeries::sweep()` | `UpdateSeriesTest` "catches the held day up on the next sweep, once the offer has lapsed" | Done |
+| R73 | Lock-then-set is one helper carrying the READ COMMITTED rationale once, used by pause, resume, the sweep and the released-day retirement; `ResumeSeries($through = null)` derives the horizon the other two verbs derive | `Support\SlotStatusSweep`, `Actions\ResumeSeries::horizonOf()` | `SeriesLifecycleTest` pause/resume/sweep cases (unchanged behaviour), `SeriesLifecycleTest` "resumes to the series' own horizon when the caller names none" | Done |
 
 ## 9a. Non-goals (explicit exclusions)
 

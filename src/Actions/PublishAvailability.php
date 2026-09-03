@@ -18,6 +18,14 @@ use RobinsonRyan\Dibs\Support\SlotGrid;
 /**
  * Publish a draft (or reopen a closed) availability, materialising its slot
  * grid the first time round (§5.1). Re-publishing never duplicates slots.
+ *
+ * **Publishing never revives a retired slot.** The grid is generated only when
+ * the availability has no slots at all, and a retired row is still a row, so an
+ * availability whose times were retired — by a geometry edit (R41) or by being
+ * released from a series when its rule moved — comes back published and offering
+ * nothing. That is the rule the released path depends on: a released day can be
+ * reopened for the sake of its history without the old grid reappearing beside
+ * the remade day's.
  */
 final class PublishAvailability
 {

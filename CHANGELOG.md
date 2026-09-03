@@ -7,6 +7,47 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A series edit no longer deletes a day a pending offer is holding.**
+  `RegenerateSeries` treated a held slot as clean, deleted the day, and
+  `dibs_offer_slots` cascaded: the offer stayed `pending` with no slots, the
+  invitee's link pointed at nothing, and nobody was told. A held slot is now a
+  live claim exactly as a booking is — the day is left standing on its old rule
+  version — and the deletion of a genuinely clean day runs through
+  `DeleteAvailability`, so the held-slot refusal every other caller meets covers
+  the race as well; a refusal leaves the day standing rather than cascading.
+- **A released day no longer offers its old times.** When a rule moves and a day
+  whose bookings are all spent is released (closed and cut loose), its remaining
+  open slots are now **retired**, so the day leaves `Slot::upcoming()` as well as
+  `bookable()` and a leader's list no longer shows the old times beside the
+  remade day's. `PublishAvailability` cannot bring them back: it generates a grid
+  only for an availability that has no slots at all, and a retired row is still a
+  row. That rule is now stated in its docblock and in SPEC §5.6.
+- **`DeleteSeries` counts released days.** The refusal read only the days the
+  series still points at, so a rule that had plainly been used could be deleted
+  once a cancellation and an edit had cut the used day loose. Release now stamps
+  `meta.released_from_series` on the day and the refusal looks there too.
+
+### Changed
+
+- **`SweepSeries` regenerates each active series** rather than only materialising
+  it. A day the last edit had to leave standing — it carried a booking, or a slot
+  an offer was holding — is caught up on the first sweep after the claim is
+  settled, without anybody editing the rule a second time. A series with nothing
+  stale pays one extra query.
+- **`ResumeSeries`'s `$through` is optional**: `ResumeSeries(Series $series,
+  ?CarbonImmutable $through = null)`. Omitted, it derives the same horizon
+  `RegenerateSeries` and `SweepSeries` derive (`max_horizon_days`, 90 days when
+  the series names none), so the three verbs cannot disagree about how far ahead a
+  series is open. Existing calls that pass a date are unchanged.
+
+### Added
+
+- `Support\SlotStatusSweep` — the one lock-then-retire/reopen helper, carrying the
+  READ COMMITTED rationale once, used by `PauseSeries`, `ResumeSeries`,
+  `SweepSeries` and the released-day retirement.
+
 ## [0.3.2] - 2026-09-03
 
 ### Changed

@@ -243,3 +243,35 @@ it('reads today on the series own clock when it ends one', function (): void {
 
     expect($series->fresh()?->status)->toBe(SeriesStatus::Ended);
 });
+
+it('still refuses to delete a rule whose used day was released by a later edit', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-15'));
+
+    $occurrence = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail();
+    (new CancelBooking)(bookFirstSlotOf($occurrence));
+
+    // The edit cuts that day loose from the series — but the rule has plainly
+    // been used, and the booking is still on the released day.
+    (new UpdateSeries)($series, editedSpec($series, [new WindowSpec(0, 9 * 60, 11 * 60)], horizon: 21));
+
+    expect($occurrence->fresh()?->series_id)->toBeNull()
+        ->and($occurrence->fresh()?->meta['released_from_series'] ?? null)->toBe($series->id)
+        ->and(fn () => (new DeleteSeries)($series))->toThrow(DeletionRefused::class)
+        ->and(Series::query()->whereKey($series->id)->exists())->toBeTrue();
+});
+
+it('resumes to the series own horizon when the caller names none', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)], horizon: 21);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-08'));
+
+    (new PauseSeries)($series);
+    (new ResumeSeries)($series->fresh());
+
+    // 21 days from the series' today, the same reach RegenerateSeries and
+    // SweepSeries derive — the caller no longer has to know the number.
+    expect($series->occurrences()->orderBy('occurs_on')->pluck('occurs_on')
+        ->map(fn ($date): string => $date->format('Y-m-d'))->all())
+        ->toBe(['2026-03-01', '2026-03-08', '2026-03-15', '2026-03-22'])
+        ->and(slotStatusesOf($series))->toBe(['open' => 16, 'retired' => 0]);
+});

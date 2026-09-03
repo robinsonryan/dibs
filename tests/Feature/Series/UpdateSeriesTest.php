@@ -4,13 +4,20 @@ declare(strict_types=1);
 
 use Carbon\CarbonImmutable;
 use RobinsonRyan\Dibs\Actions\CancelBooking;
+use RobinsonRyan\Dibs\Actions\CreateOffer;
+use RobinsonRyan\Dibs\Actions\ExpireOffers;
 use RobinsonRyan\Dibs\Actions\FindSeriesConflicts;
 use RobinsonRyan\Dibs\Actions\MaterialiseSeries;
+use RobinsonRyan\Dibs\Actions\PublishAvailability;
 use RobinsonRyan\Dibs\Actions\ReparentSlotAsAdhoc;
+use RobinsonRyan\Dibs\Actions\SweepSeries;
 use RobinsonRyan\Dibs\Actions\UpdateSeries;
 use RobinsonRyan\Dibs\Data\WindowSpec;
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\Cadence;
+use RobinsonRyan\Dibs\Enums\OfferStatus;
+use RobinsonRyan\Dibs\Enums\SlotStatus;
+use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\BookingHost;
 use RobinsonRyan\Dibs\Models\Slot;
@@ -180,4 +187,74 @@ it('keeps a booking, its host and its place when its slot is cut loose', functio
 
     // The day it came from can now be remade without taking the booking with it.
     expect(Slot::query()->whereKey($slot->id)->value('availability_id'))->toBeNull();
+});
+
+it('leaves a day standing when an offer is holding one of its times', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-22'));
+
+    $offered = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail();
+    $slot = $offered->slots()->orderBy('starts_at')->firstOrFail();
+
+    $offer = (new CreateOffer)(user('Invitee'), [$slot], CarbonImmutable::parse('2026-03-06 12:00:00'));
+
+    (new UpdateSeries)($series, editedSpec($series, [new WindowSpec(0, 9 * 60, 11 * 60)], horizon: 21));
+
+    // The day, the held slot and the offer's link to it are all still there:
+    // a pending offer is a live claim, exactly as a booking is.
+    expect($offered->fresh()?->id)->toBe($offered->id)
+        ->and($offered->fresh()?->rule_version)->toBe(1)
+        ->and($slot->fresh()?->status)->toBe(SlotStatus::Held)
+        ->and($offer->fresh()?->status)->toBe(OfferStatus::Pending)
+        ->and($offer->fresh()?->slots()->count())->toBe(1)
+        ->and($series->occurrences()->where('occurs_on', '2026-03-08')->count())->toBe(1);
+});
+
+it('catches the held day up on the next sweep, once the offer has lapsed', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)], horizon: 21);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-22'));
+
+    $offered = $series->occurrences()->where('occurs_on', '2026-03-15')->firstOrFail();
+    $offer = (new CreateOffer)(
+        user('Invitee'),
+        [$offered->slots()->orderBy('starts_at')->firstOrFail()],
+        CarbonImmutable::parse('2026-03-06 12:00:00'),
+    );
+
+    (new UpdateSeries)($series, editedSpec($series, [new WindowSpec(0, 9 * 60, 11 * 60)], horizon: 21));
+
+    CarbonImmutable::setTestNow('2026-03-07 12:00:00');
+    (new ExpireOffers)();
+
+    (new SweepSeries)();
+
+    $remade = $series->occurrences()->where('occurs_on', '2026-03-15')->firstOrFail();
+
+    expect($offer->fresh()?->status)->toBe(OfferStatus::Expired)
+        ->and(Availability::query()->whereKey($offered->id)->exists())->toBeFalse()
+        ->and($remade->rule_version)->toBe(2)
+        ->and($remade->starts_at->setTimezone('America/Denver')->format('H:i'))->toBe('09:00');
+});
+
+it('retires the times a released day still offered, and publishing does not bring them back', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-22'));
+
+    $occurrence = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail();
+    (new CancelBooking)(bookFirstSlotOf($occurrence));
+
+    (new UpdateSeries)($series, editedSpec($series, [new WindowSpec(0, 9 * 60, 11 * 60)], horizon: 21));
+
+    $released = $occurrence->fresh();
+
+    expect($released?->slots()->where('status', SlotStatus::Open->value)->count())->toBe(0)
+        ->and($released?->slots()->where('status', SlotStatus::Retired->value)->count())->toBe(4)
+        ->and(Slot::upcoming()->where('availability_id', $occurrence->id)->count())->toBe(0);
+
+    // Reopening the released day for the sake of its history must not put the
+    // old grid back beside the remade day's.
+    (new PublishAvailability)($released);
+
+    expect(Slot::bookable()->where('availability_id', $occurrence->id)->count())->toBe(0)
+        ->and(Slot::upcoming()->where('availability_id', $occurrence->id)->count())->toBe(0);
 });

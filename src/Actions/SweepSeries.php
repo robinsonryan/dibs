@@ -14,6 +14,7 @@ use RobinsonRyan\Dibs\Models\Series;
 use RobinsonRyan\Dibs\Models\Slot;
 use RobinsonRyan\Dibs\Support\Dibs;
 use RobinsonRyan\Dibs\Support\SeriesClock;
+use RobinsonRyan\Dibs\Support\SlotStatusSweep;
 use Throwable;
 
 /**
@@ -25,6 +26,13 @@ use Throwable;
  * the unclaimed times that have been and gone; and end a series whose last date
  * has passed on **its own** calendar, which is why `ends_on` is compared
  * against the series' local today and not the server's.
+ *
+ * Rolling forward goes through `RegenerateSeries`, not straight to
+ * materialisation, because a day the last edit could not touch — one carrying a
+ * booking or a slot an offer was holding — is still standing on the old rule.
+ * This is where it is caught up, the night after the claim is settled, without
+ * anybody having to edit the rule a second time. A series with nothing stale
+ * pays one extra query for the question.
  *
  * Each series is settled in its own transaction and one failure does not stop
  * the sweep — the rest still roll forward — with the first failure rethrown at
@@ -83,10 +91,11 @@ final class SweepSeries
             });
         }
 
-        // Three months when the series names no horizon: far enough that a
-        // leader sees the rule working, near enough that a rule change does not
-        // rewrite a year of rows. The same default RegenerateSeries takes.
-        return (new MaterialiseSeries)($series, $today->addDays($series->max_horizon_days ?? 90));
+        // Regeneration derives the same horizon this method would: three
+        // months when the series names none — far enough that a leader sees the
+        // rule working, near enough that a rule change does not rewrite a year
+        // of rows.
+        return (new RegenerateSeries)($series);
     }
 
     /**
@@ -98,23 +107,15 @@ final class SweepSeries
     private function retireWhatHasPassed(Series $series, CarbonImmutable $moment): void
     {
         DB::transaction(function () use ($series, $moment): void {
-            $slots = Dibs::query(Slot::class)
-                ->whereIn('availability_id', Dibs::query(Availability::class)
-                    ->where('series_id', $series->getKey())
-                    ->select('id'))
-                ->where('status', SlotStatus::Open->value)
-                ->where('ends_at', '<=', $moment)
-                ->whereDoesntHave('activeBookings')
-                ->lockForUpdate()
-                ->get();
-
-            if ($slots->isEmpty()) {
-                return;
-            }
-
-            Dibs::query(Slot::class)
-                ->whereKey($slots->modelKeys())
-                ->update(['status' => SlotStatus::Retired->value]);
+            SlotStatusSweep::retire(
+                Dibs::query(Slot::class)
+                    ->whereIn('availability_id', Dibs::query(Availability::class)
+                        ->where('series_id', $series->getKey())
+                        ->select('id'))
+                    ->where('status', SlotStatus::Open->value)
+                    ->where('ends_at', '<=', $moment)
+                    ->whereDoesntHave('activeBookings'),
+            );
         });
     }
 }
