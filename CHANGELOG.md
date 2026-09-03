@@ -7,6 +7,8 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-03
+
 ### Fixed
 
 - **A series edit no longer deletes a day a pending offer is holding.**
