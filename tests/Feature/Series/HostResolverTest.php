@@ -14,6 +14,7 @@ use RobinsonRyan\Dibs\Models\BookingHost;
 use RobinsonRyan\Dibs\Models\Slot;
 use RobinsonRyan\Dibs\Support\HostAvailability;
 use RobinsonRyan\Dibs\Support\IdentityHostResolver;
+use RobinsonRyan\Dibs\Tests\Fixtures\Models\Organization;
 use RobinsonRyan\Dibs\Tests\Fixtures\Models\Room;
 use RobinsonRyan\Dibs\Tests\Fixtures\Models\User;
 
@@ -40,7 +41,7 @@ function bindSeatResolver(array $seats): void
          */
         public function __construct(private readonly array $seats) {}
 
-        public function resolve(Model $host, CarbonInterface $at): Collection
+        public function resolve(Model $host, CarbonInterface $at, ?Model $context = null): Collection
         {
             if (! $host instanceof Room) {
                 return new Collection([$host]);
@@ -173,7 +174,7 @@ it('resolves at the slot start unless the caller names another moment', function
          */
         public function __construct(private readonly Collection $moments, private readonly User $rob) {}
 
-        public function resolve(Model $host, CarbonInterface $at): Collection
+        public function resolve(Model $host, CarbonInterface $at, ?Model $context = null): Collection
         {
             $this->moments->push($at->toIso8601String());
 
@@ -207,4 +208,62 @@ it('leaves the free-host filter unchanged for a consumer with no resolver of its
 
     expect(Slot::bookable(null, true)->pluck('id')->all())->toBe([])
         ->and(HostAvailability::freeHosts($slot->availability->fresh(), $slot, 'interviewer')->all())->toBe([]);
+});
+
+it('resolves the same pool entry to different people for two contexts', function (): void {
+    $counselors = room('Bishopric Counselor');
+    $wardA = organization('Ward A');
+    $wardB = organization('Ward B');
+    $rob = user('Rob');
+    $dan = user('Dan');
+    $sam = user('Sam');
+
+    // A calling is a catalog row shared by every ward, so its holders cannot be
+    // named without the ward the availability belongs to.
+    app()->bind(HostResolver::class, fn (): HostResolver => new class($wardA, [$rob, $dan], [$sam]) implements HostResolver
+    {
+        /**
+         * @param  list<User>  $here
+         * @param  list<User>  $elsewhere
+         */
+        public function __construct(
+            private readonly Organization $wardA,
+            private readonly array $here,
+            private readonly array $elsewhere,
+        ) {}
+
+        public function resolve(Model $host, CarbonInterface $at, ?Model $context = null): Collection
+        {
+            if (! $host instanceof Room) {
+                return new Collection([$host]);
+            }
+
+            return new Collection(
+                $context instanceof Organization && $context->is($this->wardA) ? $this->here : $this->elsewhere,
+            );
+        }
+    });
+
+    $at = CarbonImmutable::parse('2026-03-08 18:00:00', 'UTC');
+
+    $availabilityA = Availability::factory()->published()->forContext($wardA)->create();
+    AvailabilityHost::factory()->for($availabilityA)->host($counselors, 'interviewer')->create();
+    $slotA = Slot::factory()->for($availabilityA)->at($at, 30)->create();
+
+    $availabilityB = Availability::factory()->published()->forContext($wardB)->create();
+    AvailabilityHost::factory()->for($availabilityB)->host($counselors, 'interviewer')->create();
+    $slotB = Slot::factory()->for($availabilityB)->at($at, 30)->create();
+
+    expect($slotA->capacityFor())->toBe(2)
+        ->and($slotB->capacityFor())->toBe(1)
+        ->and(HostAvailability::freeHolders($availabilityA, $slotA)->pluck('id')->all())
+        ->toBe([$rob->getKey(), $dan->getKey()])
+        ->and(HostAvailability::freeHolders($availabilityB, $slotB)->pluck('id')->all())
+        ->toBe([$sam->getKey()]);
+
+    // The SQL free-host filter resolves the pool in PHP too, so it must see the
+    // same two answers.
+    bookElsewhere($sam, $at->addMinutes(10));
+
+    expect(Slot::bookable(null, true)->pluck('id')->all())->toBe([$slotA->id]);
 });

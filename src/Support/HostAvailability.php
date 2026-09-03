@@ -122,7 +122,7 @@ final class HostAvailability
 
         $pool->load('host');
 
-        $holders = self::resolvePool($pool, $at instanceof CarbonInterface ? $at : $slot->starts_at);
+        $holders = self::resolvePool($pool, $at instanceof CarbonInterface ? $at : $slot->starts_at, $availability->context);
 
         if ($holders === []) {
             return new Collection;
@@ -143,12 +143,14 @@ final class HostAvailability
 
     /**
      * The pool put through the bound resolver, keyed `host_type|host_id` so a
-     * person two entries both stand for is counted once, in pool order.
+     * person two entries both stand for is counted once, in pool order. The
+     * availability's context rides along, because a pooled position may be a
+     * catalog row several contexts share.
      *
      * @param  EloquentCollection<int, AvailabilityHost>  $pool
      * @return array<string, Model>
      */
-    private static function resolvePool(EloquentCollection $pool, CarbonInterface $at): array
+    private static function resolvePool(EloquentCollection $pool, CarbonInterface $at, ?Model $context): array
     {
         $resolver = app(HostResolver::class);
         $holders = [];
@@ -160,7 +162,7 @@ final class HostAvailability
                 continue;
             }
 
-            foreach ($resolver->resolve($host, $at) as $holder) {
+            foreach ($resolver->resolve($host, $at, $context) as $holder) {
                 $holders[self::key($holder->getMorphClass(), (string) $holder->getKey())] ??= $holder;
             }
         }

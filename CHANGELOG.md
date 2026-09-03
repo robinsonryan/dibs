@@ -7,6 +7,20 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-03
+
+### Changed
+
+- **`Contracts\HostResolver::resolve()` takes the context it is being asked
+  about**: `resolve(Model $host, CarbonInterface $at, ?Model $context = null)`,
+  where `$context` is the availability's own context (the tenant/organisation
+  morph). A pooled *position* is often a catalog row several tenants share, so
+  its holders cannot be named without knowing which tenant is asking.
+  `HostAvailability::freeHosts`/`freeHolders`, `Slot::capacityFor()` and
+  `Slot::scopeBookable(requireFreeHost:)` all pass it. The parameter is optional
+  and `IdentityHostResolver` ignores it, so the default binding is unchanged; a
+  consumer with its own resolver must widen the signature.
+
 ## [0.3.0] - 2026-09-03
 
 ### Added

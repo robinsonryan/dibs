@@ -289,9 +289,14 @@ class Slot extends Model
 
         $pool->load('host');
 
-        $moments = Dibs::query(Availability::class)
+        // The whole availability, not just its start: the resolver is also told
+        // which context is asking, because a pooled position may be a catalog
+        // row several contexts share.
+        $availabilities = Dibs::query(Availability::class)
             ->whereKey($pool->pluck('availability_id')->unique()->all())
-            ->pluck('starts_at', 'id');
+            ->with('context')
+            ->get()
+            ->keyBy(fn (Availability $availability): string => (string) $availability->getKey());
 
         $resolver = app(HostResolver::class);
         $values = null;
@@ -299,13 +304,13 @@ class Slot extends Model
 
         foreach ($pool as $member) {
             $host = $member->host;
-            $moment = $moments->get($member->availability_id);
+            $availability = $availabilities->get($member->availability_id);
 
-            if (! $host instanceof Model || ! $moment instanceof CarbonInterface) {
+            if (! $host instanceof Model || ! $availability instanceof Availability) {
                 continue;
             }
 
-            foreach ($resolver->resolve($host, $moment) as $holder) {
+            foreach ($resolver->resolve($host, $availability->starts_at, $availability->context) as $holder) {
                 $row = [$member->availability_id, $holder->getMorphClass(), (string) $holder->getKey()];
                 $key = implode('|', $row);
 

@@ -19,7 +19,7 @@ final class IdentityHostResolver implements HostResolver
     /**
      * @return Collection<int, Model>
      */
-    public function resolve(Model $host, CarbonInterface $at): Collection
+    public function resolve(Model $host, CarbonInterface $at, ?Model $context = null): Collection
     {
         return new Collection([$host]);
     }
