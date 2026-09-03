@@ -31,6 +31,33 @@ Behavior changes land here in the commit that makes them, not at tag time.
   month, and a month with no fifth simply yielding nothing.
 - `Availability::series()`, `Availability::detached()` and
   `Availability::isDetached()`.
+- `Data\SeriesSpec` and `Data\WindowSpec` — a whole rule as the caller means
+  it. `ensureValid()` enforces only what is true of any consumer's series (at
+  least one window and one host, an end after the start, ordinals on the monthly
+  cadence and nowhere else, windows inside their day, and windows sharing a
+  weekday far enough apart for one whole appointment to fit between them) and
+  throws `Exceptions\InvalidSeries`, which carries a machine `reason` -
+  `windows.overlap`, `windows.gap`, `windows.bounds`, `ends_before_starts`,
+  `ordinals.required`, `ordinals.forbidden`, `windows.required`,
+  `hosts.required` - so the consumer writes the sentence a person reads.
+- `Contracts\HostResolver` and its default `Support\IdentityHostResolver`,
+  bound in the service provider. A pool entry need not be a person: a consumer
+  may pool a position and mean "whoever holds it then". Empty means vacant.
+- `Slot::capacityFor($now = null)` - how many appointments a slot can really
+  take: the people its pool resolves to who have nothing else booked across it.
+  A slot with no pool falls back to its `capacity` column; a pool that resolves
+  to nobody gives 0.
+- `HostAvailability::freeHolders($availability, $slot, $at = null)` - the
+  role-agnostic reading of `freeHosts`, used by capacity.
+
+### Changed
+
+- `HostAvailability::freeHosts()` and `Slot::bookable(requireFreeHost: true)`
+  now put each pool entry through the bound `HostResolver` before asking who is
+  busy, and count a person two entries stand for once. With the default identity
+  resolver both answer exactly as they did. `bookable(requireFreeHost: true)` is
+  no longer a single statement - the pool is resolved in PHP first - but the
+  number of queries is fixed and does not grow with the number of slots.
 
 ## [0.2.0] - 2026-09-01
 

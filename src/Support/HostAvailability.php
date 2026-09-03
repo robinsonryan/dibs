@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace RobinsonRyan\Dibs\Support;
 
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
+use RobinsonRyan\Dibs\Contracts\HostResolver;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\AvailabilityHost;
 use RobinsonRyan\Dibs\Models\Booking;
@@ -17,8 +19,13 @@ use RobinsonRyan\Dibs\Models\Slot;
 
 /**
  * Who is spoken for, and when: the read side of the booking-time overlap
- * guard (D15). Three questions and no fourth — the package reports which
+ * guard (D15). A short, closed list of questions — the package reports which
  * hosts are free and never picks one (D8).
+ *
+ * A pool entry is not necessarily a person: `freeHosts` and `freeHolders` put
+ * every entry through the bound `HostResolver` first, so a pool of positions
+ * answers with whoever holds them at the slot. `busyBookings` and `isFree` ask
+ * about a host that is already concrete and resolve nothing.
  */
 final class HostAvailability
 {
@@ -63,18 +70,46 @@ final class HostAvailability
     }
 
     /**
-     * The availability's pool members for `$role` who are free during `$slot`,
-     * returned as the host models themselves (resolved through the `host`
-     * morph) in pool order. A host whose record no longer resolves is dropped.
+     * The people the availability's pool for `$role` stands for who are free
+     * during `$slot`, as the host models themselves, in pool order.
+     *
+     * Each pool entry is put through the bound `HostResolver` at the slot's
+     * start, so an entry naming a position yields whoever holds it then — none,
+     * one, or several. Two entries resolving to the same person yield that
+     * person once. A host whose record no longer resolves is dropped.
      *
      * @return Collection<int, Model>
      */
     public static function freeHosts(Availability $availability, Slot $slot, string $role = 'host'): Collection
     {
+        return self::resolvedFreeHolders($availability, $slot, $role, null);
+    }
+
+    /**
+     * The same answer across the whole pool, whatever role each entry fills —
+     * the role-agnostic reading `Slot::bookable(requireFreeHost:)` and
+     * `Slot::capacityFor()` take, where the question is simply whether anybody
+     * can take the appointment.
+     *
+     * `$at` names the moment the pool is resolved at, defaulting to the slot's
+     * own start; freeness is always measured across the slot itself.
+     *
+     * @return Collection<int, Model>
+     */
+    public static function freeHolders(Availability $availability, Slot $slot, ?CarbonInterface $at = null): Collection
+    {
+        return self::resolvedFreeHolders($availability, $slot, null, $at);
+    }
+
+    /**
+     * @return Collection<int, Model>
+     */
+    private static function resolvedFreeHolders(Availability $availability, Slot $slot, ?string $role, ?CarbonInterface $at): Collection
+    {
         $availabilityHost = Dibs::make(AvailabilityHost::class);
 
         $pool = $availability->hosts()
-            ->where($availabilityHost->qualifyColumn('role'), $role)
+            ->when($role !== null, fn (Builder $hosts): Builder => $hosts->where($availabilityHost->qualifyColumn('role'), $role))
             // uuid v7 keys are creation-ordered, so this is the order the pool
             // was built in — "pool order" has to be a fact, not whatever the
             // planner returns (B40).
@@ -85,25 +120,52 @@ final class HostAvailability
             return new Collection;
         }
 
+        $pool->load('host');
+
+        $holders = self::resolvePool($pool, $at instanceof CarbonInterface ? $at : $slot->starts_at);
+
+        if ($holders === []) {
+            return new Collection;
+        }
+
         $busy = self::busyAssignments($slot);
 
-        $free = $pool->reject(
-            fn (AvailabilityHost $member): bool => $busy->contains(self::key($member->host_type, $member->host_id)),
-        );
+        $free = [];
 
-        $free->load('host');
-
-        $hosts = [];
-
-        foreach ($free as $member) {
-            $host = $member->host;
-
-            if ($host instanceof Model) {
-                $hosts[] = $host;
+        foreach ($holders as $key => $holder) {
+            if (! $busy->contains($key)) {
+                $free[] = $holder;
             }
         }
 
-        return new Collection($hosts);
+        return new Collection($free);
+    }
+
+    /**
+     * The pool put through the bound resolver, keyed `host_type|host_id` so a
+     * person two entries both stand for is counted once, in pool order.
+     *
+     * @param  EloquentCollection<int, AvailabilityHost>  $pool
+     * @return array<string, Model>
+     */
+    private static function resolvePool(EloquentCollection $pool, CarbonInterface $at): array
+    {
+        $resolver = app(HostResolver::class);
+        $holders = [];
+
+        foreach ($pool as $member) {
+            $host = $member->host;
+
+            if (! $host instanceof Model) {
+                continue;
+            }
+
+            foreach ($resolver->resolve($host, $at) as $holder) {
+                $holders[self::key($holder->getMorphClass(), (string) $holder->getKey())] ??= $holder;
+            }
+        }
+
+        return $holders;
     }
 
     /**
