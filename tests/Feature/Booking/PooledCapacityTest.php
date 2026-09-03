@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use RobinsonRyan\Dibs\Actions\AssignBookingHost;
 use RobinsonRyan\Dibs\Actions\BookSlot;
+use RobinsonRyan\Dibs\Actions\CancelBooking;
 use RobinsonRyan\Dibs\Contracts\HostResolver;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Exceptions\HostOverlap;
@@ -199,4 +200,29 @@ it('guards an assignment against a host already taken on the same slot when host
 
     expect(fn (): Booking => (new AssignBookingHost)($third, $rob, 'interviewer', true))
         ->toThrow(HostOverlap::class);
+});
+
+it('opens a full pooled slot again when one of its appointments is cancelled', function (): void {
+    $counselors = room('Bishopric Counselor');
+    bindCallingResolver([(string) $counselors->getKey() => [user('Rob'), user('Dan'), user('Sam')]]);
+
+    $slot = slotPooledOn($counselors);
+
+    $ann = user('Ann');
+    $bea = user('Bea');
+    $cal = user('Cal');
+
+    $first = (new BookSlot)($slot->fresh(), $ann, $ann);
+    (new BookSlot)($slot->fresh(), $bea, $bea);
+    (new BookSlot)($slot->fresh(), $cal, $cal);
+
+    expect($slot->fresh()->status)->toBe(SlotStatus::Booked);
+
+    (new CancelBooking)($first);
+
+    // Two claims against three free holders: the seat that was given back is
+    // on offer again. Read against the `capacity` column (1) it would have
+    // stayed `booked` and the third counselor's hour would have been lost.
+    expect($slot->fresh()->status)->toBe(SlotStatus::Open)
+        ->and(Slot::bookable(null, true)->pluck('id')->all())->toBe([$slot->id]);
 });

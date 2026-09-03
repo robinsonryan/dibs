@@ -31,6 +31,19 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Changed
 
+- **A slot let go while its series is paused steps aside instead of going back
+  on sale.** `PauseSeries` leaves a held slot alone — the invitee is still
+  deciding — but when the offer lapsed, `ReleaseSlot` returned the slot to
+  `open` and nothing consulted the series, so a paused series offered that time
+  again and the sweep (which skips paused series) left it there until resume.
+  Such a slot is now `retired`, which also keeps it out of `Slot::upcoming()`;
+  `ResumeSeries` reopens that very row with the rest of them.
+- **`ReleaseSlot` measures a pooled slot the way `BookSlot` does.** It compared
+  live claims against the `capacity` column, so cancelling one of three
+  appointments on a pooled slot whose column said 1 left the slot `booked` and
+  the remaining free holder's hour unsellable. Capacity now has exactly one
+  definition — `Support\SlotCapacity` — read by `BookSlot`'s gate and settle
+  steps, by `ReleaseSlot`, and by `Slot::capacityFor()`.
 - **`SweepSeries` regenerates each active series** rather than only materialising
   it. A day the last edit had to leave standing — it carried a booking, or a slot
   an offer was holding — is caught up on the first sweep after the claim is
@@ -44,6 +57,9 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ### Added
 
+- `Support\SlotCapacity` — the one definition of how many appointments a slot
+  can take, with `forClaim()` (the booking/release reading, exclusive hosts
+  forced off) and `of()` (the reporting reading `Slot::capacityFor()` takes).
 - `Support\SlotStatusSweep` — the one lock-then-retire/reopen helper, carrying the
   READ COMMITTED rationale once, used by `PauseSeries`, `ResumeSeries`,
   `SweepSeries` and the released-day retirement.

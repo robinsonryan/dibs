@@ -22,8 +22,8 @@ use RobinsonRyan\Dibs\Enums\BookingStatus;
 use RobinsonRyan\Dibs\Enums\SlotOrigin;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Support\Dibs;
-use RobinsonRyan\Dibs\Support\HostAvailability;
 use RobinsonRyan\Dibs\Support\OverlapCheck;
+use RobinsonRyan\Dibs\Support\SlotCapacity;
 use RobinsonRyan\Dibs\Support\TablePrefixer;
 
 /**
@@ -153,29 +153,20 @@ class Slot extends Model
      * nobody to be busy. A pool that resolves to nobody is vacant and returns
      * zero, which is also when `bookable(requireFreeHost: true)` drops it.
      *
-     * This is the number `BookSlot` gates a pooled slot on (D18): the `capacity`
-     * column decides only unpooled slots, so three free interviewers at six
-     * o'clock are three appointments at six o'clock however the column reads.
-     * The gate asks it with `exclusive_hosts` off, because it subtracts the
-     * slot's own claims by counting them; here the config stands, so a host
-     * already claimed on the slot drops out when hosts are exclusive.
+     * The rule lives in `Support\SlotCapacity`, which is also what `BookSlot`
+     * gates and settles on and what `Support\ReleaseSlot` settles back against
+     * (D18) — one definition, so a slot cannot be refused a claim it was just
+     * told it had room for. Those callers ask with `exclusive_hosts` off,
+     * because they subtract the slot's own claims by counting them; here the
+     * config stands, so a host already claimed on the slot drops out when hosts
+     * are exclusive and this number is what is left.
      *
      * `$now` names the moment the pool is resolved at, defaulting to this
      * slot's start — who holds the position when the appointment happens.
      */
     public function capacityFor(?CarbonInterface $now = null): int
     {
-        $availability = $this->availability;
-
-        if (! $availability instanceof Availability) {
-            return $this->capacity;
-        }
-
-        if ($availability->hosts()->doesntExist()) {
-            return $this->capacity;
-        }
-
-        return HostAvailability::freeHolders($availability, $this, $now)->count();
+        return SlotCapacity::of($this, null, $now);
     }
 
     /**

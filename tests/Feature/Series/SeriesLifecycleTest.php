@@ -5,8 +5,10 @@ declare(strict_types=1);
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Event;
 use RobinsonRyan\Dibs\Actions\CancelBooking;
+use RobinsonRyan\Dibs\Actions\CreateOffer;
 use RobinsonRyan\Dibs\Actions\DeleteSeries;
 use RobinsonRyan\Dibs\Actions\DetachOccurrence;
+use RobinsonRyan\Dibs\Actions\ExpireOffers;
 use RobinsonRyan\Dibs\Actions\FollowSeries;
 use RobinsonRyan\Dibs\Actions\MaterialiseSeries;
 use RobinsonRyan\Dibs\Actions\PauseSeries;
@@ -14,6 +16,7 @@ use RobinsonRyan\Dibs\Actions\ResumeSeries;
 use RobinsonRyan\Dibs\Actions\SweepSeries;
 use RobinsonRyan\Dibs\Actions\UpdateSeries;
 use RobinsonRyan\Dibs\Data\WindowSpec;
+use RobinsonRyan\Dibs\Enums\OfferStatus;
 use RobinsonRyan\Dibs\Enums\SeriesStatus;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Events\SeriesDeleted;
@@ -274,4 +277,35 @@ it('resumes to the series own horizon when the caller names none', function (): 
         ->map(fn ($date): string => $date->format('Y-m-d'))->all())
         ->toBe(['2026-03-01', '2026-03-08', '2026-03-15', '2026-03-22'])
         ->and(slotStatusesOf($series))->toBe(['open' => 16, 'retired' => 0]);
+});
+
+it('does not put a time back on sale when its offer lapses while the series is paused', function (): void {
+    $series = openSeries([new WindowSpec(0, 18 * 60, 20 * 60)]);
+    (new MaterialiseSeries)($series, CarbonImmutable::parse('2026-03-15'));
+
+    $slot = $series->occurrences()->where('occurs_on', '2026-03-08')->firstOrFail()
+        ->slots()->orderBy('starts_at')->firstOrFail();
+
+    $offer = (new CreateOffer)(user('Invitee'), [$slot], CarbonImmutable::parse('2026-03-03 12:00:00'));
+
+    // Paused with the offer still out: pause leaves a held slot alone, because
+    // the invitee is still deciding.
+    (new PauseSeries)($series);
+
+    expect($slot->fresh()?->status)->toBe(SlotStatus::Held);
+
+    CarbonImmutable::setTestNow('2026-03-04 12:00:00');
+    (new ExpireOffers)();
+
+    // The offer lapsed, so the slot was let go — and a paused series offers
+    // nothing, so it steps aside instead of going back on sale.
+    expect($offer->fresh()?->status)->toBe(OfferStatus::Expired)
+        ->and($slot->fresh()?->status)->toBe(SlotStatus::Retired)
+        ->and(Slot::bookable()->pluck('id')->all())->not->toContain($slot->id)
+        ->and(Slot::upcoming()->pluck('id')->all())->not->toContain($slot->id);
+
+    // ...and resume brings that very row back, with the rest of them.
+    (new ResumeSeries)($series->fresh());
+
+    expect($slot->fresh()?->status)->toBe(SlotStatus::Open);
 });

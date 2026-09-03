@@ -318,7 +318,8 @@ busy.
 This number is also the one `BookSlot` books against: a pooled slot takes one appointment
 per free person and the `capacity` column is not consulted, so three free interviewers at
 six o'clock are three appointments at six o'clock, and a pool that resolves to nobody takes
-none.
+none. It is one definition (`Support\SlotCapacity`), so cancelling one of those three
+appointments puts the slot back on offer rather than leaving it looking full.
 
 ### Offer
 
