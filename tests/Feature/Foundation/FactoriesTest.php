@@ -5,11 +5,15 @@ declare(strict_types=1);
 use RobinsonRyan\Dibs\Enums\AvailabilityStatus;
 use RobinsonRyan\Dibs\Enums\BookingStatus;
 use RobinsonRyan\Dibs\Enums\OfferStatus;
+use RobinsonRyan\Dibs\Enums\SeriesStatus;
 use RobinsonRyan\Dibs\Enums\SlotOrigin;
 use RobinsonRyan\Dibs\Enums\SlotStatus;
 use RobinsonRyan\Dibs\Models\Availability;
 use RobinsonRyan\Dibs\Models\Booking;
 use RobinsonRyan\Dibs\Models\Offer;
+use RobinsonRyan\Dibs\Models\Series;
+use RobinsonRyan\Dibs\Models\SeriesHost;
+use RobinsonRyan\Dibs\Models\SeriesWindow;
 use RobinsonRyan\Dibs\Models\Slot;
 
 it('has an availability state for every status', function (): void {
@@ -64,4 +68,18 @@ it('sets bookedBy to bookedFor unless told otherwise', function (): void {
     expect($own->bookedBy?->is($subject))->toBeTrue()
         ->and($proxy->bookedFor?->is($subject))->toBeTrue()
         ->and($proxy->bookedBy?->is($clerk))->toBeTrue();
+});
+
+it('has a series state for every status, and factories for its windows and pool', function (): void {
+    expect(Series::factory()->active()->create()->status)->toBe(SeriesStatus::Active)
+        ->and(Series::factory()->paused()->create()->status)->toBe(SeriesStatus::Paused)
+        ->and(Series::factory()->ended()->create()->status)->toBe(SeriesStatus::Ended);
+
+    $series = Series::factory()->create();
+    SeriesWindow::factory()->for($series)->on(4, 9 * 60, 11 * 60)->create();
+    SeriesHost::factory()->for($series)->host(user('Bishop'), 'interviewer')->create();
+
+    expect($series->windows()->first()?->weekday)->toBe(4)
+        ->and($series->hosts()->first()?->role)->toBe('interviewer')
+        ->and($series->hosts()->first()?->host)->not->toBeNull();
 });
