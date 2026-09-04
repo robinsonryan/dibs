@@ -12,6 +12,8 @@ use RobinsonRyan\Dibs\Models\Series;
 use RobinsonRyan\Dibs\Models\SeriesHost;
 use RobinsonRyan\Dibs\Models\SeriesWindow;
 use RobinsonRyan\Dibs\Models\Slot;
+use RobinsonRyan\Dibs\Models\Unavailability;
+use RobinsonRyan\Dibs\Models\UnavailabilityWindow;
 
 return [
 
@@ -49,6 +51,8 @@ return [
         Series::class => Series::class,
         SeriesWindow::class => SeriesWindow::class,
         SeriesHost::class => SeriesHost::class,
+        Unavailability::class => Unavailability::class,
+        UnavailabilityWindow::class => UnavailabilityWindow::class,
     ],
 
     /*

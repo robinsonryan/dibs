@@ -53,6 +53,7 @@ There is deliberately no timezone, permission or notification configuration.
 | The claim on a slot | `Booking` | `booked` → `completed` ⇄ `no_show`, or → `cancelled` (terminal) |
 | A tokenized multi-slot invitation | `Offer` | `pending` → `accepted` / `expired` / `withdrawn` |
 | A repeating rule that makes availabilities | `Series` (+ `SeriesWindow`, `SeriesHost`) | `active` ⇄ `paused`, → `ended` |
+| Time a host or a context is not offered | `Unavailability` (+ `UnavailabilityWindow`) | `once` (a span) or `weekly` (weekday windows) |
 | Who fulfils a booking | any of your models, attached as a **host** with a `role` | pool on the availability, assignment on the booking |
 | Who the booking is for / who submitted it | `bookedFor` / `bookedBy` (your models) | equal unless booked on someone's behalf |
 
@@ -214,6 +215,85 @@ number of slots. Your resolver is asked once per distinct position, per context,
 availability *date* — two roles naming one calling, and two blocks of the same Sunday, are
 one call; the next Sunday is another. It is memoised for the length of the one read and
 never beyond it.
+
+### Away
+
+An **unavailability** is time its scope is not offered — a host who cannot take
+appointments that evening, or a whole context (a ward, a clinic) whose calendar is closed
+for it. Nothing is edited: the availabilities, the slots and the series stand exactly as
+they were, and every reading of "who is free" simply stops counting the scope while the
+away covers the time. Remove it and the time is offered again.
+
+```php
+use RobinsonRyan\Dibs\Actions\{CreateUnavailability, UpdateUnavailability, DeleteUnavailability};
+use RobinsonRyan\Dibs\Actions\FindUnavailabilityConflicts;
+use RobinsonRyan\Dibs\Data\{UnavailabilitySpec, WindowSpec};
+use RobinsonRyan\Dibs\Enums\UnavailabilityKind;
+
+// Thursday evening, just this once.
+$away = (new CreateUnavailability)(new UnavailabilitySpec(
+    scope: $bishop,
+    kind: UnavailabilityKind::Once,
+    startsAt: CarbonImmutable::parse('2026-03-12 18:00', 'UTC'),
+    endsAt: CarbonImmutable::parse('2026-03-12 21:00', 'UTC'),
+    timezone: 'America/Denver',
+    startsOn: null,
+    endsOn: null,
+    windows: [],
+    label: 'Youth conference',
+));
+
+// Never Sundays 1–2, from next week until somebody says otherwise.
+$standing = (new CreateUnavailability)(new UnavailabilitySpec(
+    scope: $bishop,
+    kind: UnavailabilityKind::Weekly,
+    startsAt: null,
+    endsAt: null,
+    timezone: 'America/Denver',
+    startsOn: CarbonImmutable::parse('2026-03-08'),
+    endsOn: null,
+    windows: [new WindowSpec(weekday: 0, startsAtMinutes: 13 * 60, endsAtMinutes: 14 * 60)],
+));
+
+(new UpdateUnavailability)($away, $narrowerSpec);   // windows replaced wholesale
+(new DeleteUnavailability)($away);                  // offered again from now on
+```
+
+A standing away's windows are wall clock in its own `timezone`, exactly as a series' are:
+one o'clock stays one o'clock across a daylight-saving change. A one-off away is a plain
+instant span. `covers($start, $end)` is the one reading of whether it takes a time out, and
+it is half-open like every other overlap here.
+
+**What it changes.** A host-scoped away takes its holder out of `HostAvailability::isFree`,
+`freeHosts`/`freeHolders`, `Slot::capacityFor()` and `Slot::bookable(requireFreeHost: true)`
+— the same subtraction a booking makes. A **context**-scoped away also drops every slot in
+that context from `bookable()` *whether or not* you asked about free hosts, because a closed
+calendar offers nothing. `busyBookings` is the one deliberate exception: it answers with
+bookings, and an away is not one.
+
+**What it does not change.** It never enforces: `AssignBookingHost(guardHostOverlap: true)`
+still refuses only a real double booking, so a leader may knowingly put an appointment on
+somebody who is away. And it never settles the appointments already inside it — ask, then
+decide:
+
+```php
+(new FindUnavailabilityConflicts)($away);          // live appointments it falls across, from now
+(new FindUnavailabilityConflicts)($spec, $from);   // ...for an away you have not saved yet
+```
+
+A host scope answers with the appointments that host is on; a context scope with every
+appointment on that calendar.
+
+If you keep your own read-once index of a screenful of times, load the aways into it the
+same way — the rows come back in memory, so nothing has to be asked per slot:
+
+```php
+use RobinsonRyan\Dibs\Support\Unavailabilities;
+
+Unavailabilities::coveringHost($bishop, $from, $until);
+Unavailabilities::coveringContext($ward, $from, $until);
+Unavailabilities::coveringAny([...$holders, $ward], $from, $until);   // one query
+```
 
 ### Repeating times
 
@@ -415,7 +495,8 @@ offer on its own, whether or not a sweep has run.
 ### Query scopes
 
 `Availability::published()` · `Slot::bookable()` (open + published availability +
-future + notice/horizon satisfied; `requireFreeHost: true` adds the free-host filter) ·
+future + notice/horizon satisfied; `requireFreeHost: true` adds the free-host filter;
+a context-scoped away drops its slots either way) ·
 `Slot::upcoming()` · `Booking::active()` · `Booking::upcoming()` · `Offer::pending()`
 (pending **and** unexpired) · `Offer::pendingFor($party)` · `Offer::createdBy($party)` ·
 `Slot::retired()` · `forContext($model)` on `Availability`, `Booking`, `Offer`. Each

@@ -7,6 +7,76 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-04
+
+### Changed
+
+- **"Busy" now means two things, not one** (D19) — the change that takes the minor. A host
+  was busy for a stretch of time when a live booking overlapped it; they are now busy when
+  a booking overlaps it **or** an unavailability covers it. Every reading of who is free
+  inherits that through one definition, `Support\OverlapCheck::isAway()`:
+  `HostAvailability::isFree`, `freeHosts`/`freeHolders`, `Slot::capacityFor()` and
+  `Slot::bookable(requireFreeHost: true)`. A consumer with no unavailabilities sees no
+  change in behaviour whatsoever.
+- **`Slot::bookable()` excludes a slot inside a context-scoped away with or without
+  `requireFreeHost`.** A calendar closed for the evening offers nothing, and that is not a
+  question about who is free — it is the one away exclusion that applies to plain
+  `bookable()`.
+- **`HostAvailability::busyBookings` deliberately does not change.** It answers with
+  bookings, and an away is not one; `isFree` is the question with both halves.
+- **Nothing enforces an away.** `AssignBookingHost(guardHostOverlap: true)` still refuses
+  only a real double booking, so a leader may knowingly put an appointment on somebody who
+  is away. Reporting, not enforcement, is where D15 and N3 already drew the line.
+- **`bookable(requireFreeHost:)` issues two more statements than it did**, whether or not
+  anything is away: the ground the query covers is read once, and the aways of its contexts
+  and holders are fetched in one query. Neither grows with the number of slots, days, pools
+  or aways — a standing away's wall-clock rule is turned into instants before the filter
+  runs and handed to it as values, so what a longer horizon grows is the size of one
+  statement, never the number of them. The cost test's bound moved from five to six; the
+  invariant it protects (unchanged by tripling the data) did not move.
+
+### Added
+
+- **`dibs_unavailabilities` and `dibs_unavailability_windows`** (migrations
+  `2024_01_01_000014_*`, `2024_01_01_000015_*`) — an away is scoped to a **host** or to a
+  **context**, and comes in two shapes: `once` (an instant span) or `weekly` (weekday
+  windows as minutes from local midnight, with a start date and an optional end date, read
+  on the away's own `timezone`). An optional `label` is the consumer's own words; the
+  package never reads it.
+- **`Models\Unavailability`** (`scope()`, `windows()`, scopes `forScope()`, `once()`,
+  `weekly()`) and **`Models\UnavailabilityWindow`**, both `@extensible` and in the
+  `dibs.models` class-map. `covers($start, $end)` is the one reading of whether an away
+  takes a time out — half-open like every other overlap here, and for a standing away
+  walked one local date at a time through `Support\SeriesClock`, so one o'clock stays one
+  o'clock across a daylight-saving change. A window a spring-forward swallows is skipped on
+  that date alone, which is the rule a series already followed.
+- **`Data\UnavailabilitySpec`** with `ensureValid()`, refusing an incoherent away before
+  anything is written: `InvalidUnavailability` carrying a machine `reason`
+  (`span.required`, `span.inverted`, `span.forbidden`, `windows.required`,
+  `windows.forbidden`, `windows.bounds`, `starts_on.required`, `ends_before_starts`,
+  `timezone.invalid`). Domain rules — church hours, a label's length, "not in the past" —
+  stay with the consumer, the only place that can phrase a refusal for a person to read.
+- **`Actions\CreateUnavailability` / `UpdateUnavailability` / `DeleteUnavailability`.** The
+  edit re-reads the row `FOR UPDATE` and replaces the windows wholesale, so narrowing,
+  widening and changing shape are one path; the removal takes the windows with it and undoes
+  nothing that was settled while the away stood. None of the three touches a slot, a booking
+  or an availability.
+- **`Actions\FindUnavailabilityConflicts(Unavailability|UnavailabilitySpec, ?$from)`** — the
+  live appointments an away falls across, forward from `$from` (the clock by default). It
+  takes the spec as readily as the row, so a consumer can ask before it saves. A host scope
+  answers with the appointments that host is on; a context scope with every appointment on
+  that calendar, whether the context is the booking's own or its day's.
+- **`Support\Unavailabilities::coveringHost / coveringContext / coveringAny /
+  coveringPairs`** — the covering rows **in memory**. SQL cannot read a wall clock, so a
+  consumer's own read-once index (a screenful of open times) is handed the same rows the
+  package uses rather than querying per slot; `coveringAny` takes a whole pool and its
+  context in one query.
+- **`Support\SeriesClock::localDate($instant, $timezone)`** — the calendar date an instant
+  falls on, on that clock. D10's single-file exception still holds: every timezone call in
+  `src/` is in `SeriesClock`.
+- `UnavailabilityFactory` (`forScope()`, `once()`, `weekly()`, `label()`) and
+  `UnavailabilityWindowFactory` (`on()`).
+
 ## [0.3.4] - 2026-09-04
 
 ### Fixed

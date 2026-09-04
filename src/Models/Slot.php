@@ -25,6 +25,7 @@ use RobinsonRyan\Dibs\Support\HostResolution;
 use RobinsonRyan\Dibs\Support\OverlapCheck;
 use RobinsonRyan\Dibs\Support\SlotCapacity;
 use RobinsonRyan\Dibs\Support\TablePrefixer;
+use RobinsonRyan\Dibs\Support\Unavailabilities;
 
 /**
  * One bookable time. Bare start/end rows: buffers live on the availability (D1).
@@ -183,6 +184,12 @@ class Slot extends Model
      * availability with no pool is never excluded: there is nobody to be busy.
      * Off by default, so `bookable()` alone means what it always meant.
      *
+     * A **context-scoped away** is the one exclusion that applies either way
+     * (D19): a ward whose calendar is closed for the evening offers nothing,
+     * and that is not a question about who is free. A **host-scoped** away
+     * takes its holder out of the pool, so it only bites under
+     * `$requireFreeHost`, exactly as a booking does.
+     *
      * @param  Builder<static>  $query
      * @return Builder<static>
      */
@@ -217,6 +224,16 @@ class Slot extends Model
                     });
             });
 
+        // The aways over the ground this query covers, turned into instants
+        // once and handed to the filter as values. A standing away is a wall
+        // clock rule and SQL cannot read one, so the conversion happens here,
+        // against the span the query actually reaches — never once per slot.
+        $spans = $this->reachableSpans($query);
+        $pool = $requireFreeHost ? $this->resolvedPool($query) : [];
+        $aways = $this->awayValues($spans, $pool);
+
+        $query = $this->withoutContextAways($query, $aways['contexts']);
+
         if (! $requireFreeHost) {
             return $query;
         }
@@ -231,16 +248,17 @@ class Slot extends Model
         // query runs means the moment used is the *availability's* start rather
         // than each slot's, which is the same calendar day; `capacityFor()`
         // resolves per slot.
-        $resolved = $this->resolvedPool($query);
+        $resolved = $this->poolValues($pool);
+        $holderAways = $aways['holders'];
 
         // Keep the slot when its availability has no pool at all (nobody to be
         // busy), or when at least one person the pool resolves to has nothing
-        // else booked across it. Both pool reads are derived tables, so the
-        // `dibs_slots` inside the busy one cannot shadow the outer slot row the
-        // comparisons correlate against. A pool that resolves to nobody leaves
-        // the values list empty and only the first branch can save a slot —
-        // which is exactly "vacant, so unbookable".
-        return $query->where(function (Builder $free) use ($resolved): void {
+        // else booked across it and no away over it. Both pool reads are derived
+        // tables, so the `dibs_slots` inside the busy one cannot shadow the outer
+        // slot row the comparisons correlate against. A pool that resolves to
+        // nobody leaves the values list empty and only the first branch can save
+        // a slot — which is exactly "vacant, so unbookable".
+        return $query->where(function (Builder $free) use ($resolved, $holderAways): void {
             $free->whereNotExists(fn (QueryBuilder $pool): QueryBuilder => $pool
                 ->fromSub($this->poolOf(), 'pool')
                 ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id')));
@@ -249,10 +267,23 @@ class Slot extends Model
                 return;
             }
 
-            $free->orWhereExists(function (QueryBuilder $member) use ($resolved): void {
+            $free->orWhereExists(function (QueryBuilder $member) use ($resolved, $holderAways): void {
                 $member
                     ->fromSub($resolved, 'pool')
-                    ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id'))
+                    ->whereColumn('pool.availability_id', $this->qualifyColumn('availability_id'));
+
+                // A holder this time falls inside an away of is not free for
+                // it, exactly as a holder with a booking across it is not.
+                if ($holderAways instanceof QueryBuilder) {
+                    $member->whereNotExists(fn (QueryBuilder $away): QueryBuilder => $away
+                        ->fromSub($holderAways, 'holder_away')
+                        ->whereColumn('holder_away.scope_type', 'pool.host_type')
+                        ->whereColumn('holder_away.scope_id', 'pool.host_id')
+                        ->whereColumn('holder_away.starts_at', '<', $this->qualifyColumn('ends_at'))
+                        ->whereColumn('holder_away.ends_at', '>', $this->qualifyColumn('starts_at')));
+                }
+
+                $member
                     ->whereNotExists(function (QueryBuilder $busy): void {
                         $busy
                             ->fromSub($this->busyHosts(), 'busy')
@@ -285,17 +316,20 @@ class Slot extends Model
 
     /**
      * The pools of every availability this query can reach, put through the
-     * bound `HostResolver`, as a `(availability_id, host_type, host_id)` values
-     * list ready to be joined against. Null when nothing resolves — no pools at
-     * all, or every pool vacant.
+     * bound `HostResolver`, as `(availability_id, host_type, host_id)` rows.
      *
      * The resolver is asked once per distinct pool host per availability — not
      * once per pool row per slot — and once only for a host two availabilities
      * of the same date both pool (`Support\HostResolution`).
      *
+     * Rows rather than SQL, because the same answer is read twice: as the
+     * values list the busy check joins against (`poolValues`), and as the list
+     * of people whose aways have to be fetched.
+     *
      * @param  Builder<static>  $query
+     * @return list<array{0: string, 1: string, 2: string}>
      */
-    private function resolvedPool(Builder $query): ?QueryBuilder
+    private function resolvedPool(Builder $query): array
     {
         $availabilityIds = (clone $query)
             ->select($this->qualifyColumn('availability_id'))
@@ -307,7 +341,7 @@ class Slot extends Model
             ->get();
 
         if ($pool->isEmpty()) {
-            return null;
+            return [];
         }
 
         $pool->load('host');
@@ -322,7 +356,7 @@ class Slot extends Model
             ->keyBy(fn (Availability $availability): string => (string) $availability->getKey());
 
         $resolution = new HostResolution;
-        $values = null;
+        $rows = [];
         $seen = [];
 
         foreach ($pool as $member) {
@@ -345,17 +379,206 @@ class Slot extends Model
                 }
 
                 $seen[$key] = true;
-
-                $select = DB::query()->selectRaw(
-                    'cast(? as uuid) as availability_id, cast(? as varchar) as host_type, cast(? as varchar) as host_id',
-                    $row,
-                );
-
-                $values = $values instanceof QueryBuilder ? $values->unionAll($select) : $select;
+                $rows[] = $row;
             }
         }
 
+        return $rows;
+    }
+
+    /**
+     * The resolved pool as an `(availability_id, host_type, host_id)` values
+     * list ready to be joined against. Null when nothing resolved — no pools at
+     * all, or every pool vacant.
+     *
+     * @param  list<array{0: string, 1: string, 2: string}>  $rows
+     */
+    private function poolValues(array $rows): ?QueryBuilder
+    {
+        $values = null;
+
+        foreach ($rows as $row) {
+            $select = DB::query()->selectRaw(
+                'cast(? as uuid) as availability_id, cast(? as varchar) as host_type, cast(? as varchar) as host_id',
+                $row,
+            );
+
+            $values = $values instanceof QueryBuilder ? $values->unionAll($select) : $select;
+        }
+
         return $values;
+    }
+
+    /**
+     * The ground this query covers, per owning context: which contexts its
+     * availabilities belong to, and the first and last instant its slots reach.
+     *
+     * One query, and the only way to convert a standing away's wall-clock
+     * windows into instants without an arbitrary horizon: a rule that repeats
+     * "until it is removed" has to be laid against something, and what the read
+     * actually reaches is the honest something.
+     *
+     * @param  Builder<static>  $query
+     * @return list<array{scope: array{0: string, 1: string}|null, from: CarbonImmutable, to: CarbonImmutable}>
+     */
+    private function reachableSpans(Builder $query): array
+    {
+        $availability = Dibs::query(Availability::class)->select(['id', 'context_type', 'context_id']);
+
+        $rows = (clone $query)
+            ->select([])
+            ->joinSub($availability, 'a', 'a.id', '=', $this->qualifyColumn('availability_id'))
+            ->groupBy('a.context_type', 'a.context_id')
+            // The availability is read through a derived table carrying neither
+            // instant, so the unqualified names resolve to the slot row and the
+            // aliases hand them back already cast by this model.
+            ->selectRaw('a.context_type as context_type, a.context_id as context_id, min(starts_at) as starts_at, max(ends_at) as ends_at')
+            ->get();
+
+        $spans = [];
+
+        foreach ($rows as $row) {
+            $type = $row->getAttribute('context_type');
+            $id = $row->getAttribute('context_id');
+
+            $spans[] = [
+                'scope' => is_string($type) && is_string($id) ? [$type, $id] : null,
+                'from' => $row->starts_at,
+                'to' => $row->ends_at,
+            ];
+        }
+
+        return $spans;
+    }
+
+    /**
+     * The aways that bear on this read, as two values lists of concrete UTC
+     * spans: those closing a whole context, and those taking one of the pool's
+     * resolved holders out.
+     *
+     * One query for both, whatever the number of contexts and holders. A
+     * context's aways are laid against that context's own span; a holder's
+     * against everything the read reaches, because a holder may stand in
+     * several contexts at once.
+     *
+     * @param  list<array{scope: array{0: string, 1: string}|null, from: CarbonImmutable, to: CarbonImmutable}>  $spans
+     * @param  list<array{0: string, 1: string, 2: string}>  $pool
+     * @return array{contexts: QueryBuilder|null, holders: QueryBuilder|null}
+     */
+    private function awayValues(array $spans, array $pool): array
+    {
+        if ($spans === []) {
+            return ['contexts' => null, 'holders' => null];
+        }
+
+        $contexts = [];
+        $from = $spans[0]['from'];
+        $to = $spans[0]['to'];
+
+        foreach ($spans as $span) {
+            $from = $from->min($span['from']);
+            $to = $to->max($span['to']);
+
+            $scope = $span['scope'];
+
+            if ($scope !== null) {
+                $contexts[$scope[0].'|'.$scope[1]] = ['scope' => $scope, 'from' => $span['from'], 'to' => $span['to']];
+            }
+        }
+
+        $holders = [];
+
+        foreach ($pool as [, $type, $id]) {
+            $holders[$type.'|'.$id] = [$type, $id];
+        }
+
+        $scopes = array_merge(
+            array_map(
+                /** @param array{scope: array{0: string, 1: string}, from: CarbonImmutable, to: CarbonImmutable} $context */
+                static fn (array $context): array => $context['scope'],
+                array_values($contexts),
+            ),
+            array_values($holders),
+        );
+
+        $contextSpans = [];
+        $holderSpans = [];
+
+        foreach (Unavailabilities::coveringPairs($scopes, $from, $to) as $away) {
+            $key = $away->scope_type.'|'.$away->scope_id;
+            $context = $contexts[$key] ?? null;
+
+            if ($context !== null) {
+                foreach ($away->intervalsBetween($context['from'], $context['to']) as $interval) {
+                    $contextSpans[] = [$away->scope_type, $away->scope_id, $interval];
+                }
+            }
+
+            if (! isset($holders[$key])) {
+                continue;
+            }
+
+            foreach ($away->intervalsBetween($from, $to) as $interval) {
+                $holderSpans[] = [$away->scope_type, $away->scope_id, $interval];
+            }
+        }
+
+        return [
+            'contexts' => $this->awayIntervalValues($contextSpans),
+            'holders' => $this->awayIntervalValues($holderSpans),
+        ];
+    }
+
+    /**
+     * Concrete away spans as a `(scope_type, scope_id, starts_at, ends_at)`
+     * values list. Null when there are none, which is how every caller says
+     * "add no SQL at all".
+     *
+     * @param  list<array{0: string, 1: string, 2: array{starts_at: CarbonImmutable, ends_at: CarbonImmutable}}>  $spans
+     */
+    private function awayIntervalValues(array $spans): ?QueryBuilder
+    {
+        $values = null;
+
+        foreach ($spans as [$type, $id, $interval]) {
+            $select = DB::query()->selectRaw(
+                'cast(? as varchar) as scope_type, cast(? as varchar) as scope_id, cast(? as timestamptz) as starts_at, cast(? as timestamptz) as ends_at',
+                [$type, $id, $interval['starts_at']->format('Y-m-d H:i:sP'), $interval['ends_at']->format('Y-m-d H:i:sP')],
+            );
+
+            $values = $values instanceof QueryBuilder ? $values->unionAll($select) : $select;
+        }
+
+        return $values;
+    }
+
+    /**
+     * A slot inside an away that closes its availability's whole context is not
+     * offered at all — the exclusion `bookable()` applies whether or not the
+     * caller asked about free hosts.
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    private function withoutContextAways(Builder $query, ?QueryBuilder $values): Builder
+    {
+        if (! $values instanceof QueryBuilder) {
+            return $query;
+        }
+
+        $availability = Dibs::query(Availability::class)->select(['id', 'context_type', 'context_id']);
+
+        return $query->whereNotExists(function (QueryBuilder $away) use ($values, $availability): void {
+            $away
+                ->fromSub($values, 'away')
+                ->whereColumn('away.starts_at', '<', $this->qualifyColumn('ends_at'))
+                ->whereColumn('away.ends_at', '>', $this->qualifyColumn('starts_at'))
+                ->whereExists(fn (QueryBuilder $owner): QueryBuilder => $owner
+                    ->fromSub($availability, 'a')
+                    ->whereColumn('a.id', $this->qualifyColumn('availability_id'))
+                    ->whereColumn('a.context_type', 'away.scope_type')
+                    ->whereColumn('a.context_id', 'away.scope_id'));
+        });
     }
 
     /**
