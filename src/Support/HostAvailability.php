@@ -25,6 +25,11 @@ use RobinsonRyan\Dibs\Models\Slot;
  * every entry through the bound `HostResolver` first, so a pool of positions
  * answers with whoever holds them at the slot. `busyBookings` and `isFree` ask
  * about a host that is already concrete and resolve nothing.
+ *
+ * Free means two things (D19): nothing booked across the time, and no away
+ * covering it — the holder's own, or the context's, which closes the whole
+ * calendar at once. `busyBookings` is the exception and says so: it answers
+ * with bookings, and an away is not one.
  */
 final class HostAvailability
 {
@@ -61,11 +66,16 @@ final class HostAvailability
     }
 
     /**
-     * Nothing of this host's is booked across `[$start, $end)`.
+     * Nothing of this host's is booked across `[$start, $end)`, **and** no away
+     * of theirs covers it (D19).
+     *
+     * `busyBookings` deliberately does not fold the away in: it answers with
+     * bookings, and an away is not one. This is the question with both halves.
      */
     public static function isFree(Model $host, CarbonImmutable $start, CarbonImmutable $end, ?Booking $except = null): bool
     {
-        return self::busyBookings($host, $start, $end, $except)->isEmpty();
+        return self::busyBookings($host, $start, $end, $except)->isEmpty()
+            && ! OverlapCheck::isAway($host, $start, $end);
     }
 
     /**
@@ -137,17 +147,55 @@ final class HostAvailability
             return new Collection;
         }
 
+        $away = self::awayScopes($holders, $availability->context, $slot);
+
+        // A context-wide away closes the whole calendar for that time: nobody
+        // on it is free, whatever their own diary says.
+        if ($availability->context instanceof Model && isset($away[self::key(
+            $availability->context->getMorphClass(),
+            (string) $availability->context->getKey(),
+        )])) {
+            return new Collection;
+        }
+
         $busy = self::busyAssignments($slot, $exclusiveHosts ?? OverlapCheck::hostsAreExclusive());
 
         $free = [];
 
         foreach ($holders as $key => $holder) {
-            if (! $busy->contains($key)) {
+            if (! $busy->contains($key) && ! isset($away[$key])) {
                 $free[] = $holder;
             }
         }
 
         return new Collection($free);
+    }
+
+    /**
+     * The `host_type|host_id` scopes an away covers this slot for — the pool's
+     * resolved holders and the context their day belongs to, asked in **one**
+     * query however large the pool is, in the spirit of the resolver's own memo
+     * (`Support\HostResolution`). One read of a slot's freeness, one read of its
+     * aways.
+     *
+     * @param  array<string, Model>  $holders
+     * @return array<string, true>
+     */
+    private static function awayScopes(array $holders, ?Model $context, Slot $slot): array
+    {
+        $scopes = array_values($holders);
+
+        if ($context instanceof Model) {
+            $scopes[] = $context;
+        }
+
+        $away = [];
+
+        foreach (Unavailabilities::coveringAny($scopes, $slot->starts_at, $slot->ends_at) as $covering) {
+            $away[self::key($covering->scope_type, $covering->scope_id)] = true;
+        }
+
+        return $away;
     }
 
     /**

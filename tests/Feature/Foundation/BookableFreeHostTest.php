@@ -223,8 +223,14 @@ it('answers in a fixed number of its own queries however many slots there are (R
     // identity one, which queries nothing. A resolver that reads a database
     // adds its own, once per distinct pooled entry per availability date —
     // measured in the next test, which is the honest bound to quote.
+    //
+    // The handful grew by two in 0.4.0 (D19), and by two whether or not
+    // anything is away: the ground this query covers has to be read before a
+    // wall-clock away can be laid against it, and then the aways of its
+    // contexts and holders are fetched in one go. Neither depends on how many
+    // slots, days or pools there are, which is what the first line asserts.
     expect($measure())->toBe($small)
-        ->and($small)->toBeLessThanOrEqual(5);
+        ->and($small)->toBeLessThanOrEqual(6);
 
     expect(Slot::bookable(now: null, requireFreeHost: true)->pluck('id')->all())->toContain($free->id);
 });

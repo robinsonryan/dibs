@@ -60,6 +60,21 @@ final class SeriesClock
     }
 
     /**
+     * The calendar date an instant falls on, on that clock — the question
+     * `date()` answers asked of a stored `timestamptz` rather than of a date
+     * the caller already wrote.
+     *
+     * A standing away needs it: its windows are wall clock, so which dates a
+     * span of instants touches can only be answered in the away's own zone, and
+     * 6 pm in Denver on the 8th is the 9th in UTC. The result is a plain UTC
+     * midnight, ready to hand straight back to `instantOn()`.
+     */
+    public static function localDate(CarbonInterface $instant, string $timezone): CarbonImmutable
+    {
+        return self::date(CarbonImmutable::instance($instant)->setTimezone($timezone));
+    }
+
+    /**
      * The clock, in UTC — the stamp `detached_at` and its like are written at.
      */
     public static function now(): CarbonImmutable

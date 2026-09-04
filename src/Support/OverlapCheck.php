@@ -15,6 +15,10 @@ use RobinsonRyan\Dibs\Models\Slot;
 /**
  * Asks whether a host is already spoken for in a window. A query, never a
  * solver: the package does not compute joint availability (D8).
+ *
+ * Two things spoke for a host's time: a live booking, and — since 0.4.0 — an
+ * away (D19). `isAway()` is the second half, and every reading of "free" in the
+ * package puts both questions.
  */
 final class OverlapCheck
 {
@@ -65,6 +69,27 @@ final class OverlapCheck
     public static function hostsAreExclusive(): bool
     {
         return (bool) config('dibs.exclusive_hosts', false);
+    }
+
+    /**
+     * The other half of "busy" (D19): an away covering any part of
+     * `[$start, $end)` makes its scope busy for that time, with nothing booked
+     * against them at all.
+     *
+     * Two scopes answer for one time. The host's own aways always count; the
+     * `$context` the time belongs to counts when the caller knows it, because a
+     * context-wide away — the ward hall is the youth conference tonight — makes
+     * everybody on that calendar busy at once.
+     *
+     * It is a **report**, exactly as D15 says: `AssignBookingHost` still refuses
+     * only a real double booking, so a leader may knowingly put an appointment
+     * on somebody who is away. Nothing here cancels, moves or edits anything.
+     */
+    public static function isAway(Model $host, CarbonInterface $start, CarbonInterface $end, ?Model $context = null): bool
+    {
+        $scopes = $context instanceof Model ? [$host, $context] : [$host];
+
+        return Unavailabilities::coveringAny($scopes, $start, $end)->isNotEmpty();
     }
 
     /**

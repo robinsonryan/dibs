@@ -40,6 +40,11 @@ of hours on one weekday within it; an **occurrence** is an `Availability` a seri
 somebody edited by hand, which the rule no longer manages; **releasing** an occurrence is
 cutting it loose from its series when history stops it being deleted.
 
+Added 2026-09-04 with D19: an **Unavailability** is time its scope is not offered — one-off
+(a span) or standing (weekday windows). Its **scope** is a host or a context, and it
+**covers** a time when it takes any part of it out. The package name is deliberately plain;
+a consumer's own word for it (ccstake says "away") is the consumer's, per N5.
+
 ## 3. Decisions (agreed in design discussion)
 
 | ID | Decision |
@@ -62,6 +67,7 @@ cutting it loose from its series when history stops it being deleted.
 | D16 | **Recurrence is a materialised series** (2026-09-03, reversing D5/N1). A `Series` holds the rule — weekday windows as wall-clock minutes, a cadence (`weekly` / `fortnightly` / `monthly-ordinal` / `once`) with Sunday-based week indices counted from the week containing `starts_on`, a date range, geometry, place, and a pool — and `MaterialiseSeries` lays it down as ordinary `Availability` rows, one per window per matching date. Nothing else in the package learns what a series is: booking, offers, the overlap guard, geometry edits and deletion all keep working on rows. An occurrence is keyed `(series_id, occurs_on, window_index)`, which is what makes materialisation idempotent without a diff. Edits bump `rule_version` and regenerate rather than diffing, and regeneration refuses three things: the past, a **detached** occurrence (`detached_at`, hand-edited on purpose), and one carrying a **live booking** (the consumer settles those first, via `FindSeriesConflicts` and then cancellation or `ReparentSlotAsAdhoc`). An occurrence whose bookings are all *spent* cannot be deleted (D3) and is **released** instead — closed and cut loose from the series (`series_id` nulled) — so its history stands and its date is free. |
 | D17 | **A pool entry stands for people, at a moment** (2026-09-03). `Contracts\HostResolver` turns one pool entry into the models it represents at a stated instant, in a stated context: none (vacant), one, or several (a position with more than one seat). The context is the availability's own (`resolve(Model $host, CarbonInterface $at, ?Model $context = null)`, added 0.3.1) because a position is often a catalog row several tenants share, and who holds it cannot be answered without knowing which tenant is asking. It exists so a consumer can pool a *position* — a calling, a rota, a desk — and have a set of times opened months ahead survive the holder changing. The default binding is identity, so a consumer that pools people sees no change. It is consulted by `HostAvailability::freeHosts`/`freeHolders`, `Slot::bookable(requireFreeHost:)` and `Slot::capacityFor()` — once per distinct `(entry, context, availability date)` per read, memoised in `Support\HostResolution` (R81), never once per pool row per slot; it is **not** consulted by `busyBookings`/`isFree`, which ask about a host that is already concrete, nor by assignment, which stays the consumer's (D8/D9). A pool that resolves to nobody is vacant: zero capacity, and no bookable slot. |
 | D18 | **A slot with no number is measured by its pool** (2026-09-03, narrowed 2026-09-04). The `capacity` column is nullable. **A numbered capacity is the cap, everywhere** — `BookSlot`'s gate and settle step, `Support\ReleaseSlot`, `Slot::capacityFor()` — whatever the availability's pool says; a pool on such a slot is a **candidate list**, the people who might fulfil the appointment, and `bookable(requireFreeHost: true)` keeps its D15 meaning of "at least one of them is free". **A null capacity is derived from the pool**: the people that pool resolves to (D17) with nothing booked across the slot elsewhere are how many appointments it takes, so three free interviewers at six o'clock are three appointments at six o'clock, and a pool that resolves to nobody, or whose every member is booked across the slot, refuses the first claim; a null capacity with no pool behind it seats one, because there is nobody to derive from. Which kind a slot is, is decided where the grid is laid down: `dibs_availabilities.capacity_from_pool` (default `false`) is read by `PublishAvailability` and `UpdateAvailabilityGeometry` every time they materialise slots, and `MaterialiseSeries` sets it on every occurrence it creates, so a series-made time is pool-derived and stays that way through every regeneration. 0.3.2–0.3.3 applied the pool rule to *every* pooled slot, which silently turned a consumer's one-appointment times with a candidate list of hosts into N-appointment times and refused their acknowledged double bookings; the column is what tells the two apart. The gate asks the question with `exclusive_hosts` off whatever the config says, because it already subtracts the slot's own claims by counting them. **`exclusive_hosts`** (`config/dibs.php`, default `false`) is the second half: with it on, a live booking on the very slot being asked about *does* make its host busy for that slot, so a host with one claim on a **pool-derived** slot stops counting towards its capacity, drops out of `freeHolders` and `bookable(requireFreeHost:)`, and is refused by `AssignBookingHost(guardHostOverlap: true)`. A numbered slot's own claims never change who is free for it: the number is already the whole of its cap. Off is the R19 rule the package always had (one host, several attendees, one session); on is what a one-to-one appointment needs — an interview cannot be shared. The flag lives in one place, `Support\OverlapCheck::hostsAreExclusive()`, so every reading of "busy" honours it. |
+| D19 | **An away is time its scope is not offered** (2026-09-04). `dibs_unavailabilities` records that a **host** cannot take appointments, or that a **context** — a ward whose hall is the youth conference tonight — is closed altogether, in two shapes: a one-off instant span, and a standing rule of weekday windows on the away's own clock, read through `Support\SeriesClock` exactly as a series' windows are (D10's exception, unchanged: one file still holds every timezone call). It is a **read-time filter, never an edit**. Nothing it covers is deleted, retired or rescheduled — the availabilities, slots and series stand exactly as they were, and removing the away offers the time again from that moment on. What changes is the one definition of busy: a host is busy for `[start, end)` when a booking overlaps it **or** an away covers it, and a context-scoped away makes everybody on that calendar busy at once. `Support\OverlapCheck::isAway()` is where that lives, so `HostAvailability::isFree`, `freeHosts`/`freeHolders`, `Slot::capacityFor()` and `Slot::bookable(requireFreeHost:)` inherit it with no new code path; `bookable()` also drops a slot inside a **context**-scoped away whether or not the caller asked about free hosts, because a closed calendar offers nothing. Two things it deliberately does not do. It does not enforce: `AssignBookingHost(guardHostOverlap: true)` still refuses only a real double booking, so a leader may knowingly put an appointment on somebody who is away — reporting, not enforcement, is the D15/N3 line. And it does not settle the appointments already inside it: `FindUnavailabilityConflicts` names them and the consumer decides, exactly as `FindSeriesConflicts` does for a rule change. |
 
 ## 4. Data model
 
@@ -141,6 +147,28 @@ appointment between them lives in `SeriesSpec`, not the schema.
 `host`, timestamps. Unique `(series_id, host_type, host_id, role)`. Copied onto each
 occurrence at materialisation, so a pool change is a rule change and a booked occurrence
 keeps the pool it was booked under.
+
+### `dibs_unavailabilities` (D19)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid pk | |
+| `scope_type` / `scope_id` | morph, **not** nullable | whose time it is: a host, or a context whose whole calendar it closes |
+| `kind` | string | `once` \| `weekly` |
+| `starts_at` / `ends_at` | timestamptz nullable | the span of a one-off away; null on a standing one |
+| `timezone` | string | IANA zone; the clock a standing away's windows are written on, and stored on a one-off too so an edit can change its shape without inventing one |
+| `starts_on` / `ends_on` | date / date nullable | the local dates a standing away runs between; null end = until it is removed |
+| `label` | string nullable | the consumer's own words ("Youth conference"); the package never reads it |
+| `meta` | jsonb | consumer payload |
+| timestamps | | |
+
+Indexes `(scope_type, scope_id, starts_at)` and `(scope_type, scope_id, kind)`.
+
+### `dibs_unavailability_windows`
+`id`, `unavailability_id` fk cascadeOnDelete, `weekday` smallint (0 = Sunday … 6),
+`starts_at_minutes` / `ends_at_minutes` smallint (minutes from local midnight), timestamps.
+Check constraint `ends_at_minutes > starts_at_minutes`; index `(unavailability_id, weekday)`.
+Several rows on one weekday are several stretches of that day, and unlike a series' windows
+they need leave no room between them: an away opens no times.
 
 ### `dibs_bookings`
 | Column | Type | Notes |
@@ -280,6 +308,14 @@ looking full. The booking and release paths ask with `exclusive_hosts` forced of
 subtract the slot's own claims by counting them; `capacityFor()` lets the config stand, so with
 exclusive hosts it reports what is *left*.
 
+`bookable()` also drops a slot inside a **context**-scoped away, with or without `requireFreeHost`
+(D19): a calendar closed for the evening offers nothing, which is not a question about who is free.
+With `requireFreeHost`, a holder an away covers is not free for the slot, exactly as a holder with a
+booking across it is not. Both are still a fixed number of statements: the ground the query covers is
+read once, the aways of its contexts and holders are fetched in one query, and their wall-clock rules
+are turned into instants before the filter runs and handed to it as values. What grows with a longer
+horizon is the size of one statement, never the number of them.
+
 ### 5.5 Host availability (D15)
 
 `Support\HostAvailability` is the read side of the R18 guard:
@@ -300,6 +336,12 @@ exclusive hosts it reports what is *left*.
   booking gate asks it with the flag off (D18).
 
 `busyBookings` and `isFree` resolve nothing: they ask about a host that is already concrete.
+
+`isFree` and the two pool readings also account for aways (D19): `isFree` is false when an away of
+that host's covers the window, `freeHosts`/`freeHolders` drop a holder an away covers and answer with
+nobody at all when an away closes the availability's whole context. `busyBookings` is the deliberate
+exception — it answers with bookings, and an away is not one. The aways of a pool and its context are
+read in **one** query per call, however large the pool.
 
 ### 5.6 Series (D16)
 
@@ -396,6 +438,35 @@ exclusive hosts it reports what is *left*.
   to leave standing, the night after its booking or its offer is settled. Per-series
   transaction; one failure does not stop the sweep and is rethrown at the end.
 
+### 5.7 Away (D19)
+
+`Data\UnavailabilitySpec` is the whole of an away as the caller means it — scope, kind, span or
+windows, clock, dates, an optional label — and `ensureValid()` refuses an incoherent one before
+anything is written, in `InvalidUnavailability` with a machine `reason` the consumer keys on
+(`span.required`, `span.inverted`, `span.forbidden`, `windows.required`, `windows.forbidden`,
+`windows.bounds`, `starts_on.required`, `ends_before_starts`, `timezone.invalid`). Domain rules —
+church hours, a label's length, "not in the past" — stay with the consumer, which is the only place
+that can phrase a refusal for a person to read (N5).
+
+- **CreateUnavailability(spec)** / **UpdateUnavailability(away, spec)** / **DeleteUnavailability(away)**
+  — record, change and remove one. The edit re-reads the row `FOR UPDATE` first and replaces the
+  windows wholesale rather than diffing, so narrowing, widening and changing shape are one path.
+  None of the three touches a slot, a booking or an availability, and removal undoes nothing that was
+  settled while the away stood.
+- **FindUnavailabilityConflicts(away | spec, `$from = null`)** — the live appointments an away falls
+  across, from `$from` (the clock by default) forward. It takes the spec as well as the row, so a
+  consumer can ask before it saves. A **host** scope answers with the appointments that host is on; a
+  **context** scope with every appointment on that calendar, whether the context is the booking's own
+  or its day's. It writes nothing and locks nothing.
+- **`Models\Unavailability::covers($start, $end)`** is the one reading of "does this away take that
+  time out": half-open, like every other overlap here. A standing away is walked one local date at a
+  time on its own clock through `Support\SeriesClock`, and a window a spring-forward swallows is
+  skipped on that one date, which is R79's rule for a series read the same way.
+- **`Support\Unavailabilities::coveringHost / coveringContext / coveringAny / coveringPairs`** return
+  the covering rows **in memory**. SQL cannot read a wall clock, so every read path fetches the rows
+  that could matter once and asks them in PHP — and a consumer's own read-once index is handed the
+  same rows rather than querying per slot.
+
 ## 6. Events
 
 `RobinsonRyan\Dibs\Events`: `AvailabilityPublished`, `AvailabilityClosed`, `BookingCreated`,
@@ -409,7 +480,7 @@ notifications, reminders, and workflow side effects (e.g. ccstake's calling foll
 ## 7. Configuration & extension (`config/dibs.php`)
 
 - `models` class-map: consumers may substitute extended models (must extend the package's) —
-  `Series`, `SeriesWindow` and `SeriesHost` included.
+  `Series`, `SeriesWindow`, `SeriesHost`, `Unavailability` and `UnavailabilityWindow` included.
 - `token_length` (default 48).
 - `exclusive_hosts` (default `false`): whether a live booking on a slot makes its host busy for
   that same slot (D18). Read in one place, `Support\OverlapCheck::hostsAreExclusive()`.
@@ -523,6 +594,14 @@ per the `verification` skill before any "done" claim.
 | R74 | A slot let go while its series is **paused** retires instead of reopening, so a lapsed offer cannot put a time back on sale the leader took down; `ResumeSeries` reopens that very row with the rest | `Support\ReleaseSlot` | `SeriesLifecycleTest` "does not put a time back on sale when its offer lapses while the series is paused" | Done |
 | R75 | One definition of a slot's capacity (`Support\SlotCapacity`), read by `BookSlot::assertBookable`, `BookSlot::settle`, `Support\ReleaseSlot` and `Slot::capacityFor()`: a cancellation on a pooled slot with free holders left reopens it rather than reading the `capacity` column | `Support\SlotCapacity`, `Actions\BookSlot`, `Support\ReleaseSlot`, `Slot::capacityFor()` | `PooledCapacityTest` "opens a full pooled slot again when one of its appointments is cancelled" | Done |
 | R73 | Lock-then-set is one helper carrying the READ COMMITTED rationale once, used by pause, resume, the sweep and the released-day retirement; `ResumeSeries($through = null)` derives the horizon the other two verbs derive | `Support\SlotStatusSweep`, `Actions\ResumeSeries::horizonOf()` | `SeriesLifecycleTest` pause/resume/sweep cases (unchanged behaviour), `SeriesLifecycleTest` "resumes to the series' own horizon when the caller names none" | Done |
+
+| R86 | `dibs_unavailabilities` and `dibs_unavailability_windows` exist as §4 says (morph scope not null, `kind`, span, timezone, local dates, label, meta, both indexes, the windows' bounds check and cascade) | `database/migrations/2024_01_01_00001{4,5}_*`, `Models\Unavailability`, `Models\UnavailabilityWindow`, `Enums\UnavailabilityKind`, `config/dibs.php` models map | `tests/Feature/Away/UnavailabilityTest.php` recording cases | Done |
+| R87 | `UnavailabilitySpec::ensureValid()` refuses an incoherent away with a machine reason and writes nothing: a one-off without both instants or ending before it starts, a standing one with no windows or a window outside its day, an end date before its start date, a shape carrying the other's fields, and any away on an unknown timezone | `Data\UnavailabilitySpec`, `Exceptions\InvalidUnavailability` | `UnavailabilityTest` refusal cases (one per reason) | Done |
+| R88 | `Unavailability::covers()` is half-open, and a standing away keeps its wall-clock hour across a daylight-saving change on its own timezone, inside `starts_on`/`ends_on` and nowhere else | `Models\Unavailability::covers()`, `::intervalsBetween()`, `Support\SeriesClock::localDate()` | `UnavailabilityTest` covers / daylight-saving / date-range cases | Done |
+| R89 | Create, edit and remove: an edit replaces the windows wholesale (including standing → one-off), a removal takes the windows with it, and nothing else in the package is touched by any of the three | `Actions\CreateUnavailability`, `Actions\UpdateUnavailability`, `Actions\DeleteUnavailability`, `Actions\SyncAwayWindows` | `UnavailabilityTest` edit / shape-change / delete cases, `AwayBusyTest` "leaves a context's times alone once its away is removed" | Done |
+| R90 | One definition of busy includes aways (D19): a host-scoped away takes its holder out of `isFree`, `freeHosts`/`freeHolders`, `capacityFor()` and `bookable(requireFreeHost: true)`; a context-scoped away empties the pool and drops every slot in that context from `bookable()` with or without `requireFreeHost`, for its span and only its span; `busyBookings` still answers with bookings only; `exclusive_hosts` reads exactly as it did | `Support\OverlapCheck::isAway()`, `Support\HostAvailability`, `Support\Unavailabilities`, `Slot::scopeBookable()` | `tests/Feature/Away/AwayBusyTest.php` (11 cases) | Done |
+| R91 | `FindUnavailabilityConflicts` names the live appointments an away falls across and no others — a host scope's own, a context scope's whole calendar (the booking's context or its day's) — takes an unsaved spec as readily as a row, and looks forward only from `$from` | `Actions\FindUnavailabilityConflicts` | `tests/Feature/Away/FindUnavailabilityConflictsTest.php` (7 cases) | Done |
+| R92 | `bookable(requireFreeHost:)` with aways present issues a fixed number of the package's own statements, independent of how many days, pools and aways there are | `Slot::reachableSpans()`, `::awayValues()`, `Support\Unavailabilities::coveringPairs()` | `AwayBusyTest` "answers in a fixed number of queries however many days carry aways", `BookableFreeHostTest` "answers in a fixed number of its own queries…" | Done |
 
 ## 9a. Non-goals (explicit exclusions)
 
