@@ -81,4 +81,13 @@ final class SlotFactory extends Factory
     {
         return $this->state(fn (): array => ['capacity' => $capacity]);
     }
+
+    /**
+     * Measured by the availability's host pool rather than by a number (D18) —
+     * what a series-made time looks like.
+     */
+    public function fromPool(): self
+    {
+        return $this->state(fn (): array => ['capacity' => null]);
+    }
 }

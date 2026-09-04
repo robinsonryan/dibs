@@ -36,7 +36,7 @@ use RobinsonRyan\Dibs\Support\TablePrefixer;
  * @property CarbonImmutable $starts_at
  * @property CarbonImmutable $ends_at
  * @property string|null $location
- * @property int $capacity
+ * @property int|null $capacity
  * @property SlotStatus $status
  * @property CarbonImmutable|null $created_at
  * @property CarbonImmutable|null $updated_at
@@ -144,22 +144,25 @@ class Slot extends Model
     }
 
     /**
-     * How many appointments this slot can really take: the number of people its
-     * availability's pool resolves to who have nothing else booked across it
-     * (D15, and the consumer rule that capacity *is* who is free).
+     * How many appointments this slot can take. A numbered `capacity` column is
+     * that number, whatever its availability's pool says: the pool is then a
+     * candidate list of who might take the appointment, not a count of how many
+     * the time seats.
      *
-     * A slot with no pool behind it — an adhoc slot, or an availability nobody
-     * was pooled on — falls back to its own `capacity` column, because there is
-     * nobody to be busy. A pool that resolves to nobody is vacant and returns
-     * zero, which is also when `bookable(requireFreeHost: true)` drops it.
+     * A **null** column is the pool-derived kind (D18): the number of people
+     * its availability's pool resolves to who have nothing else booked across
+     * it. A pool that resolves to nobody is vacant and returns zero, which is
+     * also when `bookable(requireFreeHost: true)` drops it; a null column with
+     * no pool behind it — an adhoc slot, or an availability nobody was pooled
+     * on — has nobody to be measured by and seats one.
      *
      * The rule lives in `Support\SlotCapacity`, which is also what `BookSlot`
      * gates and settles on and what `Support\ReleaseSlot` settles back against
-     * (D18) — one definition, so a slot cannot be refused a claim it was just
-     * told it had room for. Those callers ask with `exclusive_hosts` off,
-     * because they subtract the slot's own claims by counting them; here the
-     * config stands, so a host already claimed on the slot drops out when hosts
-     * are exclusive and this number is what is left.
+     * — one definition, so a slot cannot be refused a claim it was just told it
+     * had room for. Those callers ask with `exclusive_hosts` off, because they
+     * subtract the slot's own claims by counting them; here the config stands,
+     * so a host already claimed on a pool-derived slot drops out when hosts are
+     * exclusive and this number is what is left.
      *
      * `$now` names the moment the pool is resolved at, defaulting to this
      * slot's start — who holds the position when the appointment happens.
@@ -260,14 +263,21 @@ class Slot extends Model
                             ->whereColumn('busy.starts_at', '<', $this->qualifyColumn('ends_at'))
                             ->whereColumn('busy.ends_at', '>', $this->qualifyColumn('starts_at'));
 
-                        if (OverlapCheck::hostsAreExclusive()) {
-                            return;
-                        }
-
                         // A booking on this very slot never makes its own host
                         // busy for it (D15/B38) — unless hosts are exclusive
-                        // (D18), when one claim takes the host out.
-                        $busy->whereColumn('busy.slot_id', '!=', $this->qualifyColumn('id'));
+                        // (D18) *and* the slot is measured by its pool, when
+                        // one claim takes the host out. A numbered capacity is
+                        // the whole of that slot's cap, so its own claims never
+                        // change who counts as free for it (B43).
+                        $busy->where(function (QueryBuilder $own): void {
+                            $own->whereColumn('busy.slot_id', '!=', $this->qualifyColumn('id'));
+
+                            if (! OverlapCheck::hostsAreExclusive()) {
+                                return;
+                            }
+
+                            $own->orWhereNull($this->qualifyColumn('capacity'));
+                        });
                     });
             });
         });

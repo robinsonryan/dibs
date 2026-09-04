@@ -76,7 +76,7 @@ final class PublishAvailability
                 'starts_at' => $position['starts_at'],
                 'ends_at' => $position['ends_at'],
                 'location' => null,
-                'capacity' => 1,
+                'capacity' => $availability->slotCapacity(),
                 'status' => SlotStatus::Open,
             ]);
         }

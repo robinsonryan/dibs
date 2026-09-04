@@ -60,7 +60,7 @@ function slotWithPool(CarbonImmutable $startsAt, Model ...$pool): Slot
         AvailabilityHost::factory()->for($availability)->host($member, 'interviewer')->create();
     }
 
-    return Slot::factory()->for($availability)->at($startsAt, 30)->create();
+    return Slot::factory()->for($availability)->fromPool()->at($startsAt, 30)->create();
 }
 
 function bookElsewhere(Model $host, CarbonImmutable $startsAt): void
@@ -153,11 +153,13 @@ it('reads two pool callings that share a person as one person', function (): voi
     expect($slot->capacityFor())->toBe(1);
 });
 
-it('falls back to the slot capacity when there is no pool at all', function (): void {
+it('falls back to one appointment when a pool-derived slot has no pool at all', function (): void {
     $at = CarbonImmutable::parse('2026-03-08 18:00:00', 'UTC');
     $pooled = slotWithPool($at);
     $adhoc = Slot::factory()->adhoc()->at($at, 30)->capacity(3)->create();
 
+    // Nobody to derive from, so the time seats one; the adhoc slot's own
+    // number stands.
     expect($pooled->capacityFor())->toBe(1)
         ->and($adhoc->capacityFor())->toBe(3);
 });
@@ -248,11 +250,11 @@ it('resolves the same pool entry to different people for two contexts', function
 
     $availabilityA = Availability::factory()->published()->forContext($wardA)->create();
     AvailabilityHost::factory()->for($availabilityA)->host($counselors, 'interviewer')->create();
-    $slotA = Slot::factory()->for($availabilityA)->at($at, 30)->create();
+    $slotA = Slot::factory()->for($availabilityA)->fromPool()->at($at, 30)->create();
 
     $availabilityB = Availability::factory()->published()->forContext($wardB)->create();
     AvailabilityHost::factory()->for($availabilityB)->host($counselors, 'interviewer')->create();
-    $slotB = Slot::factory()->for($availabilityB)->at($at, 30)->create();
+    $slotB = Slot::factory()->for($availabilityB)->fromPool()->at($at, 30)->create();
 
     expect($slotA->capacityFor())->toBe(2)
         ->and($slotB->capacityFor())->toBe(1)

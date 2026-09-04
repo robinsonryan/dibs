@@ -119,12 +119,12 @@ it('lets exactly one of two contending sessions take the last unit of capacity (
 });
 
 it('lets two contending sessions into a pooled slot while two people are free (R67)', function (): void {
-    // The capacity column says one; the pool says two are free, and the pool
-    // is what a pooled slot is measured by.
+    // The capacity column is null, so the pool decides: two people are free,
+    // and two is what the time seats.
     $availability = Availability::factory()->published()->create();
     AvailabilityHost::factory()->for($availability)->host(user('Alice'), 'interviewer')->create();
     AvailabilityHost::factory()->for($availability)->host(user('Bob'), 'interviewer')->create();
-    $slot = Slot::factory()->for($availability)->create();
+    $slot = Slot::factory()->for($availability)->fromPool()->create();
 
     $ann = user('Ann');
     $bea = user('Bea');
@@ -169,7 +169,7 @@ it('lets two contending sessions into a pooled slot while two people are free (R
 it('lets exactly one of two contending sessions into a pooled slot with one person free (R67)', function (): void {
     $availability = Availability::factory()->published()->create();
     AvailabilityHost::factory()->for($availability)->host(user('Alice'), 'interviewer')->create();
-    $slot = Slot::factory()->for($availability)->create();
+    $slot = Slot::factory()->for($availability)->fromPool()->create();
 
     $ann = user('Ann');
     $bea = user('Bea');

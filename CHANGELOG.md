@@ -7,6 +7,71 @@ Behavior changes land here in the commit that makes them, not at tag time.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-04
+
+### Fixed
+
+- **A host pool no longer decides how many appointments every time holds.**
+  0.3.2 made *every* slot whose availability has a pool book against its free
+  resolved holders and ignore the `capacity` column. A consumer that puts a
+  candidate **list** of people on an ordinary time — the whole bishopric on a set
+  of open times, one appointment per time — had those times silently become
+  N-appointment times, and a deliberate, acknowledged double booking (booking
+  the time anyway and assigning a host with
+  `AssignBookingHost(guardHostOverlap: false)`) was refused before it could be
+  made, because nobody in the pool was free. A candidate list and a
+  derived-capacity time were two different things wearing one table.
+
+  The rule is now narrower and explicit: **pool-derived capacity applies only to
+  a slot whose `capacity` column is null.** A numbered capacity is the cap
+  everywhere — `BookSlot`'s gate and settle step, `Support\ReleaseSlot`,
+  `Slot::capacityFor()` — whatever the pool says, and `bookable(requireFreeHost:
+  true)` keeps its older meaning of "at least one of the pool is free". A null
+  capacity is measured by who is free, exactly as 0.3.2 described; with no pool
+  behind it, it seats one.
+
+### Added
+
+- **`dibs_slots.capacity` is nullable** (migration
+  `2024_01_01_000012_make_dibs_slots_capacity_nullable`). The default stays 1, so
+  every path that does not ask for the pool rule keeps opening one-appointment
+  times.
+- **`dibs_availabilities.capacity_from_pool`** (boolean, default `false`;
+  migration `2024_01_01_000013_add_capacity_from_pool_to_dibs_availabilities_table`)
+  says a day's times are measured by its host pool. `PublishAvailability` and
+  `UpdateAvailabilityGeometry` read it every time they lay a grid down — through
+  `Availability::slotCapacity()` — so a day remade by a geometry edit, a series
+  regeneration or a resume comes back the same kind of time; `DuplicateAvailability`
+  carries it. It lives on the availability rather than in a call argument because
+  none of those paths sees the original call.
+- **`MaterialiseSeries` sets it on every occurrence it creates**, so a time laid
+  down by a repeating rule is pool-derived: the rule says who fulfils the day, and
+  how many appointments the day holds follows from how many of them are free.
+- `SlotFactory::fromPool()` — a slot written with a null capacity.
+
+### Changed
+
+- **`exclusive_hosts` now bites only on pool-derived times.** With it on, a live
+  booking on the very slot being asked about takes its host out of
+  `bookable(requireFreeHost: true)` for that slot only when the slot's capacity
+  comes from the pool. A numbered capacity is already the whole of that slot's
+  cap, so counting its own claims twice would take a two-appointment time down to
+  one.
+- **An offer may hold a pool-derived time**, as it always could: `CreateOffer`
+  refuses a *numbered* capacity above one, and a null column is not one. The hold
+  takes the whole time, however many of the pool are free (D12 stands).
+- The four `HostAssignmentTest` cases 0.3.2 re-fixtured are back on their v0.2.0
+  fixtures and v0.2.0 assertions — a capacity-1 slot is gated by its column again,
+  so the `guardHostOverlap` behaviour each one names is reachable without a second
+  pool member propping the pool up.
+
+### Spec
+
+- D18 rewritten to the narrower rule; D15/§4/§5.1/§5.2/§5.4/§5.6 and ledger rows
+  R25, R67, R68 amended; R84 (a number is the cap everywhere) and R85
+  (`capacity_from_pool` is read by every path that lays a grid down) added. Build
+  decision B43; B42 marked reverted.
+
 ## [0.3.3] - 2026-09-03
 
 ### Fixed

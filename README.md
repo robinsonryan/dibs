@@ -40,7 +40,7 @@ php artisan vendor:publish --tag=dibs-migrations   # once published, the package
 | `table_prefix` | `dibs_` | Prefix for the seven tables the package owns. |
 | `models` | package classes | Class-map: substitute a subclass of any package model; every relationship and query the package runs resolves through it. |
 | `token_length` | `48` | Length of an offer's link token (never below 40). |
-| `exclusive_hosts` | `false` | Whether a booking on a slot makes its host busy for that same slot. Off: one host may seat several attendees in one session. On: an appointment is one-to-one, so a host with a claim on the slot stops counting towards its capacity. |
+| `exclusive_hosts` | `false` | Whether a booking on a slot makes its host busy for that same slot. Off: one host may seat several attendees in one session. On: an appointment is one-to-one, so a host with a claim on a **pool-derived** slot stops counting towards its capacity. |
 
 There is deliberately no timezone, permission or notification configuration.
 
@@ -114,7 +114,7 @@ $slots = Slot::bookable()->whereHas('availability', fn ($q) => $q->where('type',
 
 $booking = (new BookSlot)($slot, bookedFor: $member, bookedBy: $member);
 // row-locked; validates open + published + future + notice/horizon + capacity, where a
-// pooled slot's capacity is how many of its pool are free, not its capacity column;
+// slot with a null capacity column is measured by how many of its pool are free;
 // a pool of exactly one host per role is auto-assigned; fires BookingCreated
 
 (new BookSlot)($slot, $member, $clerk, new BookingOptions(guardHostOverlap: true, type: 'calling-meeting'));
@@ -335,25 +335,46 @@ $this->app->bind(HostResolver::class, CallingHolders::class);
 //   $at      = the moment to answer for — the slot's start, or the availability's
 //   $context = the owning scope asking (the availability's own): a position is often a
 //              catalog row several tenants share, so who holds it depends on who asks
-//   empty    = vacant: no capacity, and the slot is not bookable(requireFreeHost: true)
-//   two rows = two seats: two of capacity
+//   empty    = vacant: nobody free, and the slot is not bookable(requireFreeHost: true)
+//   two rows = two seats: two appointments on a pool-derived time
 ```
 
 The default binding is identity, so if you pool people directly nothing changes.
 
+### How many appointments a time holds
+
+A slot's `capacity` column is nullable, and that is what says which kind of time it is.
+
+**A number is the cap**, wherever capacity is read — booking, releasing, `capacityFor()`.
+A pool on such a time is a **candidate list**: the people who might fulfil the
+appointment, not a count of how many it seats. A whole bishopric on a set of open times,
+one appointment per time, is this kind.
+
+**A null column means the pool decides**: the time takes one appointment per person its
+pool resolves to who has nothing else booked across it, so three free interviewers at six
+o'clock are three appointments at six o'clock, and a pool that resolves to nobody takes
+none. A null column with no pool behind it seats one — there is nobody to derive from.
+
 ```php
-$slot->capacityFor();          // people the pool resolves to with nothing else booked across it
-$slot->capacityFor($at);       // ...resolved at another moment; defaults to the slot's start
+$slot->capacityFor();          // the column, or — when it is null — who is free
+$slot->capacityFor($at);       // ...the pool resolved at another moment; defaults to the slot's start
 ```
 
-A slot with no pool at all falls back to its own `capacity` column — there is nobody to be
-busy.
+Which kind a time is, is set where the grid is laid down:
 
-This number is also the one `BookSlot` books against: a pooled slot takes one appointment
-per free person and the `capacity` column is not consulted, so three free interviewers at
-six o'clock are three appointments at six o'clock, and a pool that resolves to nobody takes
-none. It is one definition (`Support\SlotCapacity`), so cancelling one of those three
-appointments puts the slot back on offer rather than leaving it looking full.
+```php
+$availability->update(['capacity_from_pool' => true]);   // its slots are written with capacity null
+```
+
+`PublishAvailability` and a geometry edit both read it, so a remade grid comes back the
+same kind of time; `MaterialiseSeries` sets it on every occurrence, so **times laid down by
+a repeating rule are always pool-derived**. It is one definition
+(`Support\SlotCapacity`), read by `BookSlot`'s gate, its settle step and the release path
+alike, so cancelling one of those three appointments puts the time back on offer rather
+than leaving it looking full.
+
+`Slot::bookable(requireFreeHost: true)` is unaffected by the difference: either kind drops
+out when nobody in its pool is free.
 
 ### Offer
 
@@ -376,7 +397,7 @@ $booking = (new AcceptOffer)($offer, $chosenSlot);                  // books it 
 (new WithdrawOffer)($offer);                                          // releases everything; fires OfferWithdrawn
 ```
 
-Offers hold capacity-1 slots only. Who may *see* an offer is your concern (token
+Offers hold whole times: a slot whose capacity column is above one is refused (a pool-derived one is held entire). Who may *see* an offer is your concern (token
 lookup + your authorization); the package guarantees only that held slots never
 appear bookable.
 

@@ -285,7 +285,7 @@ it('asks the resolver once for a position a slot pools twice (capacityFor)', fun
         AvailabilityHost::factory()->for($availability)->host($bishop, $role)->create();
     }
 
-    $slot = Slot::factory()->for($availability)->at(CarbonImmutable::parse('2026-03-08 09:00:00', 'UTC'), 30)->create();
+    $slot = Slot::factory()->for($availability)->fromPool()->at(CarbonImmutable::parse('2026-03-08 09:00:00', 'UTC'), 30)->create();
 
     expect($slot->capacityFor())->toBe(1)
         ->and($calls->count())->toBe(1);

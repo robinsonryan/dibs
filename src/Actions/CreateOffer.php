@@ -134,8 +134,10 @@ final class CreateOffer
             throw SlotNotOfferable::for($slot, 'it no longer exists');
         }
 
-        // v1 holds whole slots only; one unit of a capacity-N slot is deferred (D12).
-        if ($locked->capacity !== 1) {
+        // v1 holds whole slots only; one unit of a capacity-N slot is deferred
+        // (D12). A pool-derived slot (null column) is held whole as it always
+        // was — the hold takes the time, however many of the pool are free (B43).
+        if ($locked->capacity !== null && $locked->capacity !== 1) {
             throw SlotNotOfferable::for($locked, 'only a capacity-1 slot can be held by an offer');
         }
 

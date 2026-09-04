@@ -31,6 +31,7 @@ use RobinsonRyan\Dibs\Support\TablePrefixer;
  * @property \Carbon\CarbonImmutable $ends_at
  * @property int $slot_duration_minutes
  * @property int $slot_padding_minutes
+ * @property bool $capacity_from_pool
  * @property int|null $min_notice_minutes
  * @property int|null $max_horizon_days
  * @property AvailabilityStatus $status
@@ -57,6 +58,7 @@ class Availability extends Model
     protected $attributes = [
         'status' => 'draft',
         'slot_padding_minutes' => 0,
+        'capacity_from_pool' => false,
         'meta' => '{}',
     ];
 
@@ -75,6 +77,7 @@ class Availability extends Model
             'ends_at' => 'immutable_datetime',
             'slot_duration_minutes' => 'integer',
             'slot_padding_minutes' => 'integer',
+            'capacity_from_pool' => 'boolean',
             'min_notice_minutes' => 'integer',
             'max_horizon_days' => 'integer',
             'status' => AvailabilityStatus::class,
@@ -103,6 +106,18 @@ class Availability extends Model
     public function series(): BelongsTo
     {
         return $this->belongsTo(Dibs::model(Series::class), 'series_id');
+    }
+
+    /**
+     * The capacity to write on the slots this availability materialises: null
+     * when its times are measured by the host pool (D18), and the column's own
+     * default — one appointment — when they are not. Every path that lays a
+     * grid down reads it here, so publishing, a geometry edit and a series
+     * regeneration cannot disagree about what kind of time this day opens.
+     */
+    public function slotCapacity(): ?int
+    {
+        return $this->capacity_from_pool ? null : 1;
     }
 
     /**

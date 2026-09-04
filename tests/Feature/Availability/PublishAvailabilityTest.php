@@ -174,3 +174,12 @@ it('dispatches AvailabilityPublished only after the action commits', function ()
 
     expect($level)->toBe(1);
 });
+
+it('leaves the capacity of its times to the host pool when the availability asks it to', function (): void {
+    $availability = publishDraft();
+    $availability->update(['capacity_from_pool' => true]);
+
+    (new PublishAvailability)($availability);
+
+    expect($availability->slots()->pluck('capacity')->all())->toBe([null, null, null, null]);
+});

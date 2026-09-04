@@ -432,3 +432,23 @@ it('keeps a spent-history slot that the new grid names again, rather than retiri
             '10:00-10:30 open',
         ]);
 });
+
+it('keeps the times pool-derived when the grid is remade', function (): void {
+    $availability = Availability::factory()
+        ->draft()
+        ->window(geometryAt('2026-03-08 09:00'), geometryAt('2026-03-08 10:00'))
+        ->geometry(30)
+        ->create(['capacity_from_pool' => true]);
+
+    (new PublishAvailability)($availability);
+
+    (new UpdateAvailabilityGeometry)($availability, new AvailabilityGeometry(
+        geometryAt('2026-03-08 09:00'),
+        geometryAt('2026-03-08 10:00'),
+        20,
+    ));
+
+    // The rule rides on the availability, so every time the grid is laid down
+    // again it comes back the same kind of time.
+    expect(geometrySlots($availability)->pluck('capacity')->all())->toBe([null, null, null]);
+});

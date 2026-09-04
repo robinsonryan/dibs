@@ -123,6 +123,10 @@ final class MaterialiseSeries
             'min_notice_minutes' => $series->min_notice_minutes,
             'max_horizon_days' => $series->max_horizon_days,
             'status' => AvailabilityStatus::Draft,
+            // A time laid down by a rule is measured by its pool: the rule says
+            // who fulfils the day, and how many appointments the day holds
+            // follows from how many of them are free (D18).
+            'capacity_from_pool' => true,
             'meta' => $series->meta,
             'series_id' => $series->getKey(),
             'occurs_on' => $date->format('Y-m-d'),
